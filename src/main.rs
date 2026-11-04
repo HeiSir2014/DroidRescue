@@ -618,18 +618,18 @@ impl PadApp {
         let (lamp, text) = if let Some(task) = snap.tasks.first() {
             (c.amber, format!("{task}…"))
         } else if matches!(self.mirror, MirrorState::Connecting(_)) {
-            (c.amber, "CONNECTING…".to_string())
+            (c.amber, "连接中…".to_string())
         } else if let Some(d) = selected {
             let name = snap.name_of(d);
             if live {
-                (c.amber, format!("{name} · LIVE"))
+                (c.amber, format!("{name} · 投屏中"))
             } else {
                 (c.green, name)
             }
         } else if unauthorized {
             (c.red, "未授权 · 请在设备上允许 USB 调试".to_string())
         } else {
-            (c.text_faint, "OFFLINE".to_string())
+            (c.text_faint, "未连接".to_string())
         };
         let text_color = if lamp == c.green || lamp == c.text_faint {
             c.text_dim
