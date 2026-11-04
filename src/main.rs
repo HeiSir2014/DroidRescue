@@ -35,7 +35,6 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
-use theme::{AMBER, GREEN, RED, TEXT_DIM, TEXT_FAINT};
 use widgets::CaptionIcon;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -726,10 +725,10 @@ impl PadApp {
         let (rect, _) =
             ui.allocate_exact_size(vec2(ui.available_width(), CAPTION_H), egui::Sense::hover());
         let p = ui.painter();
-        p.rect_filled(rect, 0.0, theme::SURFACE);
+        p.rect_filled(rect, 0.0, theme::c().surface);
         p.line_segment(
             [rect.left_bottom(), rect.right_bottom()],
-            egui::Stroke::new(1.0, theme::LINE),
+            egui::Stroke::new(1.0, theme::c().line),
         );
 
         let y = rect.center().y;
@@ -738,27 +737,23 @@ impl PadApp {
             Align2::LEFT_CENTER,
             "安卓救援宝",
             theme::strong_font(15.0),
-            AMBER,
+            theme::c().amber,
         );
-        let sub = p.text(
-            pos2(mark.right() + 7.0, y + 1.5),
-            Align2::LEFT_CENTER,
-            "DroidRescue",
-            theme::display_font(11.0),
-            TEXT_FAINT,
-        );
+        // The English name lives in the OS window title (taskbar, Alt-Tab):
+        // the 340 px rail has no room for both next to the status.
+        let sub = mark;
 
         let ready = snap.selected.is_some();
         let unauthorized = snap.devices.iter().any(|d| d.state == "unauthorized");
         let live = self.session().is_some();
         let lamp = if live {
-            AMBER
+            theme::c().amber
         } else if ready {
-            GREEN
+            theme::c().green
         } else if unauthorized {
-            RED
+            theme::c().red
         } else {
-            TEXT_FAINT
+            theme::c().text_faint
         };
         let lamp_c = pos2(sub.right() + 14.0, y);
         p.circle_filled(lamp_c, 6.0, lamp.gamma_multiply(0.18));
@@ -782,9 +777,9 @@ impl PadApp {
             "OFFLINE".into()
         };
         let color = if snap.tasks.is_empty() && !live {
-            TEXT_DIM
+            theme::c().text_dim
         } else {
-            AMBER
+            theme::c().amber
         };
         p.text(
             pos2(lamp_c.x + 10.0, y),
@@ -831,14 +826,14 @@ impl PadApp {
 
     fn stage(&mut self, ui: &mut egui::Ui, rect: Rect, snap: &Snapshot) {
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, 0.0, theme::WELL);
+        p.rect_filled(rect, 0.0, theme::c().well);
         // Faint instrument grid.
         let step = 24.0;
         let mut x = rect.left() + step / 2.0;
         while x < rect.right() {
             let mut y = rect.top() + step / 2.0;
             while y < rect.bottom() {
-                p.circle_filled(pos2(x, y), 0.8, theme::LINE);
+                p.circle_filled(pos2(x, y), 0.8, theme::c().line);
                 y += step;
             }
             x += step;
@@ -906,7 +901,7 @@ impl PadApp {
                 Align2::CENTER_CENTER,
                 msg,
                 theme::mono(13.0),
-                TEXT_FAINT,
+                theme::c().text_faint,
             );
         }
 
@@ -960,28 +955,28 @@ impl PadApp {
         if let Some(d) = snap.devices.iter().find(|d| d.state == "unauthorized") {
             ui.label(
                 RichText::new(format!("{} 未授权 · 需在平板上允许 USB 调试", d.serial))
-                    .color(RED)
+                    .color(theme::c().red)
                     .small(),
             );
         }
         let cell = (ui.available_width() - gap * 2.0) / 3.0;
         ui.horizontal(|ui| {
             let link = match snap.selected.as_deref() {
-                Some(s) if s.contains(':') => ("WIFI", GREEN),
-                Some(_) => ("USB", GREEN),
-                None => ("—", TEXT_FAINT),
+                Some(s) if s.contains(':') => ("WIFI", theme::c().green),
+                Some(_) => ("USB", theme::c().green),
+                None => ("—", theme::c().text_faint),
             };
             widgets::readout(ui, cell, "LINK", link.0, link.1);
             let screen = match snap.awake {
-                Some(true) => ("亮屏", GREEN),
-                Some(false) => ("熄屏", AMBER),
-                None => ("—", TEXT_FAINT),
+                Some(true) => ("亮屏", theme::c().green),
+                Some(false) => ("熄屏", theme::c().amber),
+                None => ("—", theme::c().text_faint),
             };
             widgets::readout(ui, cell, "SCREEN", screen.0, screen.1);
             let lock = match snap.locked {
-                Some(true) => ("已锁", AMBER),
-                Some(false) => ("解锁", GREEN),
-                None => ("—", TEXT_FAINT),
+                Some(true) => ("已锁", theme::c().amber),
+                Some(false) => ("解锁", theme::c().green),
+                None => ("—", theme::c().text_faint),
             };
             widgets::readout(ui, cell, "LOCK", lock.0, lock.1);
         });
@@ -996,7 +991,7 @@ impl PadApp {
             self.start_mirror(ui.ctx());
         }
         let idle = !self.mirroring();
-        egui::CollapsingHeader::new(RichText::new("投屏参数").color(TEXT_DIM))
+        egui::CollapsingHeader::new(RichText::new("投屏参数").color(theme::c().text_dim))
             .id_salt("mirror-opts")
             .show(ui, |ui| {
                 ui.add_enabled_ui(idle, |ui| {
@@ -1133,7 +1128,11 @@ impl PadApp {
             }
             rescue::UnlockRoute::None => "未连接设备",
         };
-        ui.label(RichText::new(via).font(theme::mono(10.0)).color(TEXT_FAINT));
+        ui.label(
+            RichText::new(via)
+                .font(theme::mono(10.0))
+                .color(theme::c().text_faint),
+        );
         ui.horizontal(|ui| {
             widgets::switch_inline(ui, &mut self.remember_password, "记住此设备的密码");
             if saved && let Some(id) = device_id {
@@ -1144,7 +1143,7 @@ impl PadApp {
                     ui.label(
                         RichText::new("● 已保存")
                             .font(theme::mono(10.5))
-                            .color(GREEN),
+                            .color(theme::c().green),
                     );
                 });
             }
@@ -1152,6 +1151,19 @@ impl PadApp {
 
         // 05 TOOLS
         widgets::section(ui, "05", "TOOLS", "工具");
+        // Appearance works without a device; egui persists the choice.
+        let mut preference = ui.ctx().options(|o| o.theme_preference);
+        if widgets::segmented(
+            ui,
+            &mut preference,
+            &[
+                (egui::ThemePreference::System, "跟随系统"),
+                (egui::ThemePreference::Light, "亮色"),
+                (egui::ThemePreference::Dark, "暗色"),
+            ],
+        ) {
+            ui.ctx().set_theme(preference);
+        }
         ui.add_enabled_ui(ready, |ui| {
             if widgets::switch(ui, &mut self.stay_on, "插电常亮（不锁屏）").changed() {
                 let value = if self.stay_on { 7 } else { 0 };
@@ -1184,8 +1196,8 @@ impl PadApp {
         // 07 LOG
         widgets::section(ui, "07", "LOG", "日志");
         egui::Frame::NONE
-            .fill(theme::WELL)
-            .stroke(egui::Stroke::new(1.0, theme::LINE))
+            .fill(theme::c().well)
+            .stroke(egui::Stroke::new(1.0, theme::c().line))
             .corner_radius(theme::RADIUS)
             .inner_margin(Margin::same(8))
             .show(ui, |ui| {
@@ -1196,11 +1208,11 @@ impl PadApp {
                     .show(ui, |ui| {
                         for line in &snap.log {
                             let color = if line.starts_with('✔') {
-                                GREEN
+                                theme::c().green
                             } else if line.starts_with('✘') {
-                                RED
+                                theme::c().red
                             } else {
-                                TEXT_DIM
+                                theme::c().text_dim
                             };
                             ui.label(RichText::new(line).font(theme::mono(10.5)).color(color));
                         }
@@ -1216,10 +1228,10 @@ impl PadApp {
         let gap = ui.spacing().item_spacing.x;
         let status = self.rescue.status.lock().unwrap().clone();
         let (text, color) = match (&status.device, status.busy) {
-            (Some(d), true) => (format!("● {d} · 执行中…"), AMBER),
-            (Some(d), false) => (format!("● {d}"), GREEN),
-            (None, true) => ("连接平板中…".to_string(), AMBER),
-            (None, false) => ("插上平板即可操作".to_string(), TEXT_DIM),
+            (Some(d), true) => (format!("● {d} · 执行中…"), theme::c().amber),
+            (Some(d), false) => (format!("● {d}"), theme::c().green),
+            (None, true) => ("连接平板中…".to_string(), theme::c().amber),
+            (None, false) => ("插上平板即可操作".to_string(), theme::c().text_dim),
         };
         ui.label(RichText::new(text).font(theme::mono(10.5)).color(color));
         if status.needs_setup {
@@ -1230,7 +1242,7 @@ impl PadApp {
         let profile = self.profile(snap).cloned();
         let auto = self.profile_choice.is_none();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("机型").color(TEXT_DIM));
+            ui.label(RichText::new("机型").color(theme::c().text_dim));
             let shown = match (&profile, auto) {
                 (Some(p), true) => format!("自动 · {}", p.name),
                 (Some(p), false) => p.name.clone(),
@@ -1287,7 +1299,7 @@ impl PadApp {
             }
         });
 
-        egui::CollapsingHeader::new(RichText::new("高级").color(TEXT_DIM))
+        egui::CollapsingHeader::new(RichText::new("高级").color(theme::c().text_dim))
             .id_salt("rescue-advanced")
             .show(ui, |ui| {
                 self.rescue_advanced(ui, snap, &status);
@@ -1629,7 +1641,12 @@ fn hud(
     let bg = Rect::from_min_size(origin - vec2(6.0, 4.0), vec2(300.0, 104.0));
     p.rect_filled(bg, 3.0, egui::Color32::from_black_alpha(150));
     for (i, line) in lines.iter().enumerate() {
-        let color = if i == 0 { AMBER } else { TEXT_DIM };
+        // Overlay on video with a black scrim: always the dark palette.
+        let color = if i == 0 {
+            theme::DARK.amber
+        } else {
+            theme::DARK.text_dim
+        };
         p.text(
             origin + vec2(0.0, i as f32 * 16.0),
             Align2::LEFT_TOP,
@@ -1649,7 +1666,7 @@ fn combo_row<T: PartialEq + Copy>(
     fmt: impl Fn(T) -> String,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(TEXT_DIM));
+        ui.label(RichText::new(label).color(theme::c().text_dim));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             egui::ComboBox::from_id_salt(id)
                 .width(110.0)
@@ -1686,6 +1703,7 @@ impl eframe::App for PadApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         ctx.request_repaint_after(Duration::from_millis(500));
+        theme::sync(&ctx);
         self.poll_mirror();
         self.rescue_passthrough(&ctx);
         if let Some(s) = self.session() {
@@ -1734,7 +1752,7 @@ impl eframe::App for PadApp {
         });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(theme::BG))
+            .frame(egui::Frame::NONE.fill(theme::c().bg))
             .show(root, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let controls_left = self.caption(ui, &snap, maximized);
@@ -1786,7 +1804,7 @@ impl eframe::App for PadApp {
                     };
                     ui.painter().line_segment(
                         [pos2(edge_x, rail.top()), pos2(edge_x, rail.bottom())],
-                        egui::Stroke::new(1.0, theme::LINE),
+                        egui::Stroke::new(1.0, theme::c().line),
                     );
                     rail
                 } else {
@@ -1881,10 +1899,16 @@ fn main() -> eframe::Result {
             let app = PadApp::new(cc);
             match migrated {
                 Ok(0) => {}
-                Ok(n) => log(
-                    &app.shared,
-                    format!("✔ 已从旧版 padctl 迁移 {n} 个数据文件（密码、配置、窗口位置）"),
-                ),
+                Ok(n) => {
+                    // padctl forced dark mode and egui persisted that as if
+                    // it were the user's choice: start migrated users on
+                    // "follow the system" instead.
+                    cc.egui_ctx.set_theme(egui::ThemePreference::System);
+                    log(
+                        &app.shared,
+                        format!("✔ 已从旧版 padctl 迁移 {n} 个数据文件（密码、配置、窗口位置）"),
+                    );
+                }
                 Err(e) => log(&app.shared, format!("✘ 迁移旧版 padctl 数据失败: {e}")),
             }
             Ok(Box::new(app))

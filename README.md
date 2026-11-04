@@ -28,4 +28,4 @@ cargo build --release           # target/release/droidrescue.exe
 
 - [scrcpy](https://github.com/Genymobile/scrcpy)：设备端 scrcpy-server 与协议
 - Android platform-tools（adb）、FFmpeg
-- 字体：Maple Mono CN、Chakra Petch
+- 字体：Maple Mono CN

@@ -246,7 +246,7 @@ pub fn fit(screen: Rect, video: (u32, u32)) -> Rect {
 /// mask and camera. Call `paint_back` before the video and `paint_front` after.
 pub mod paint {
     use super::{Layout, Part};
-    use crate::theme::{AMBER, AMBER_HI};
+    use crate::theme;
     use eframe::egui::{Color32, CornerRadius, Painter, Stroke, StrokeKind};
 
     const FRAME: Color32 = Color32::from_rgb(0x2A, 0x2D, 0x32);
@@ -280,10 +280,11 @@ pub mod paint {
             );
         }
         // Keys sit under the frame so only their proud part shows.
+        let accent = theme::c();
         for (part, rect) in &l.keys {
             let (fill, edge) = match (Some(*part) == pressed, Some(*part) == hot) {
-                (true, _) => (AMBER, AMBER_HI),
-                (_, true) => (KEY.gamma_multiply(1.4), AMBER),
+                (true, _) => (accent.amber, accent.amber_hi),
+                (_, true) => (KEY.gamma_multiply(1.4), accent.amber),
                 _ => (KEY, FRAME_EDGE),
             };
             let r = radius(0.9 * l.scale);

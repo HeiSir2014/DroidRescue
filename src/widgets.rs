@@ -1,9 +1,7 @@
-//! Custom-painted widgets for the instrument-rail look.
+//! Custom-painted widgets for the instrument-rail look. Colours come from
+//! the active palette (`theme::c()`), so every widget follows light / dark.
 
-use crate::theme::{
-    self, AMBER, AMBER_HI, BG, LINE, RED, SURFACE, SURFACE_HI, SURFACE_HOVER, TEXT, TEXT_DIM,
-    TEXT_FAINT,
-};
+use crate::theme;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2,
     vec2,
@@ -13,6 +11,7 @@ const R: CornerRadius = CornerRadius::same(theme::RADIUS);
 
 /// `01  DEVICE ─────────── 设备`
 pub fn section(ui: &mut Ui, index: &str, tag: &str, title: &str) {
+    let c = theme::c();
     ui.add_space(4.0);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
     let p = ui.painter();
@@ -22,25 +21,25 @@ pub fn section(ui: &mut Ui, index: &str, tag: &str, title: &str) {
         Align2::LEFT_CENTER,
         index,
         theme::strong_font(10.5),
-        AMBER,
+        c.amber,
     );
     let tag_r = p.text(
         pos2(idx.right() + 8.0, y),
         Align2::LEFT_CENTER,
         tag,
         theme::mono(10.0),
-        TEXT_FAINT,
+        c.text_faint,
     );
     let title_r = p.text(
         pos2(rect.right(), y),
         Align2::RIGHT_CENTER,
         title,
         theme::mono(10.5),
-        TEXT_DIM,
+        c.text_dim,
     );
     p.line_segment(
         [pos2(tag_r.right() + 8.0, y), pos2(title_r.left() - 8.0, y)],
-        Stroke::new(1.0, LINE),
+        Stroke::new(1.0, c.line),
     );
 }
 
@@ -55,25 +54,27 @@ pub enum CaptionIcon {
 
 /// Title-bar button, 44×caption_h; icons are drawn, not glyphs (crisp at any DPI).
 pub fn caption_button(ui: &mut Ui, icon: CaptionIcon, height: f32) -> Response {
+    let c = theme::c();
     let (rect, resp) = ui.allocate_exact_size(vec2(44.0, height), Sense::click());
     let p = ui.painter();
     let hovered = resp.hovered();
     let (fill, fg) = match (icon, hovered, resp.is_pointer_button_down_on()) {
-        (CaptionIcon::Close, true, _) => (RED, Color32::WHITE),
-        (_, true, true) => (SURFACE_HOVER, AMBER_HI),
-        (_, true, false) => (SURFACE_HI, TEXT),
-        _ => (Color32::TRANSPARENT, TEXT_DIM),
+        // Windows convention: close turns red with a white glyph in both themes.
+        (CaptionIcon::Close, true, _) => (c.red, Color32::WHITE),
+        (_, true, true) => (c.surface_hover, c.amber_hi),
+        (_, true, false) => (c.surface_hi, c.text),
+        _ => (Color32::TRANSPARENT, c.text_dim),
     };
     p.rect_filled(rect, CornerRadius::ZERO, fill);
-    let c = rect.center();
+    let m = rect.center();
     let s = Stroke::new(1.2, fg);
     match icon {
         CaptionIcon::Minimize => {
-            p.line_segment([c + vec2(-5.0, 0.5), c + vec2(5.0, 0.5)], s);
+            p.line_segment([m + vec2(-5.0, 0.5), m + vec2(5.0, 0.5)], s);
         }
         CaptionIcon::Maximize => {
             p.rect_stroke(
-                Rect::from_center_size(c, Vec2::splat(9.0)),
+                Rect::from_center_size(m, Vec2::splat(9.0)),
                 1.0,
                 s,
                 StrokeKind::Inside,
@@ -81,22 +82,22 @@ pub fn caption_button(ui: &mut Ui, icon: CaptionIcon, height: f32) -> Response {
         }
         CaptionIcon::Restore => {
             p.rect_stroke(
-                Rect::from_center_size(c + vec2(-1.5, 1.5), Vec2::splat(7.5)),
+                Rect::from_center_size(m + vec2(-1.5, 1.5), Vec2::splat(7.5)),
                 1.0,
                 s,
                 StrokeKind::Inside,
             );
-            p.line_segment([c + vec2(-2.0, -4.5), c + vec2(4.5, -4.5)], s);
-            p.line_segment([c + vec2(4.5, -4.5), c + vec2(4.5, 2.0)], s);
+            p.line_segment([m + vec2(-2.0, -4.5), m + vec2(4.5, -4.5)], s);
+            p.line_segment([m + vec2(4.5, -4.5), m + vec2(4.5, 2.0)], s);
         }
         CaptionIcon::Close => {
-            p.line_segment([c + vec2(-4.5, -4.5), c + vec2(4.5, 4.5)], s);
-            p.line_segment([c + vec2(4.5, -4.5), c + vec2(-4.5, 4.5)], s);
+            p.line_segment([m + vec2(-4.5, -4.5), m + vec2(4.5, 4.5)], s);
+            p.line_segment([m + vec2(4.5, -4.5), m + vec2(-4.5, 4.5)], s);
         }
         CaptionIcon::Swap => {
             for (dy, dir) in [(-2.5_f32, 1.0_f32), (2.5, -1.0)] {
-                let a = c + vec2(-5.0 * dir, dy);
-                let b = c + vec2(5.0 * dir, dy);
+                let a = m + vec2(-5.0 * dir, dy);
+                let b = m + vec2(5.0 * dir, dy);
                 p.line_segment([a, b], s);
                 p.line_segment([b, b + vec2(-2.5 * dir, -2.0)], s);
                 p.line_segment([b, b + vec2(-2.5 * dir, 2.0)], s);
@@ -108,6 +109,7 @@ pub fn caption_button(ui: &mut Ui, icon: CaptionIcon, height: f32) -> Response {
 
 /// Full-width amber call-to-action.
 pub fn primary(ui: &mut Ui, text: &str, enabled: bool) -> Response {
+    let c = theme::c();
     let sense = if enabled {
         Sense::click()
     } else {
@@ -116,13 +118,13 @@ pub fn primary(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), sense);
     let p = ui.painter();
     let fill = match (enabled, resp.hovered(), resp.is_pointer_button_down_on()) {
-        (false, ..) => SURFACE_HI,
-        (_, _, true) => AMBER.gamma_multiply(0.85),
-        (_, true, _) => AMBER_HI,
-        _ => AMBER,
+        (false, ..) => c.surface_hi,
+        (_, _, true) => c.amber.gamma_multiply(0.85),
+        (_, true, _) => c.amber_hi,
+        _ => c.amber,
     };
     p.rect_filled(rect, R, fill);
-    let fg = if enabled { BG } else { TEXT_FAINT };
+    let fg = if enabled { c.on_amber } else { c.text_faint };
     p.text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -139,10 +141,11 @@ pub fn primary(ui: &mut Ui, text: &str, enabled: bool) -> Response {
 
 /// Full-width outlined "stop" action.
 pub fn danger(ui: &mut Ui, text: &str) -> Response {
+    let c = theme::c();
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::click());
     let p = ui.painter();
     let fill = if resp.hovered() {
-        RED.gamma_multiply(0.14)
+        c.red.gamma_multiply(0.14)
     } else {
         Color32::TRANSPARENT
     };
@@ -150,7 +153,7 @@ pub fn danger(ui: &mut Ui, text: &str) -> Response {
     p.rect_stroke(
         rect,
         R,
-        Stroke::new(1.0, RED.gamma_multiply(0.8)),
+        Stroke::new(1.0, c.red.gamma_multiply(0.8)),
         StrokeKind::Inside,
     );
     p.text(
@@ -158,13 +161,14 @@ pub fn danger(ui: &mut Ui, text: &str) -> Response {
         Align2::CENTER_CENTER,
         text,
         theme::strong_font(14.0),
-        RED,
+        c.red,
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Hardware-style key: glyph on top, small caption below.
 pub fn key(ui: &mut Ui, glyph: &str, label: &str, size: Vec2, enabled: bool) -> Response {
+    let c = theme::c();
     let sense = if enabled {
         Sense::click()
     } else {
@@ -174,10 +178,10 @@ pub fn key(ui: &mut Ui, glyph: &str, label: &str, size: Vec2, enabled: bool) -> 
     let p = ui.painter();
     let down = resp.is_pointer_button_down_on();
     let (fill, stroke, fg) = match (enabled, resp.hovered(), down) {
-        (false, ..) => (SURFACE, LINE, TEXT_FAINT),
-        (_, _, true) => (theme::AMBER_LO, AMBER, AMBER_HI),
-        (_, true, _) => (SURFACE_HOVER, AMBER.gamma_multiply(0.55), TEXT),
-        _ => (SURFACE_HI, LINE, TEXT),
+        (false, ..) => (c.surface, c.line, c.text_faint),
+        (_, _, true) => (c.amber_lo, c.amber, c.amber_hi),
+        (_, true, _) => (c.surface_hover, c.amber.gamma_multiply(0.55), c.text),
+        _ => (c.surface_hi, c.line, c.text),
     };
     p.rect_filled(rect, R, fill);
     p.rect_stroke(rect, R, Stroke::new(1.0, stroke), StrokeKind::Inside);
@@ -195,23 +199,24 @@ pub fn key(ui: &mut Ui, glyph: &str, label: &str, size: Vec2, enabled: bool) -> 
         Align2::CENTER_CENTER,
         label,
         theme::mono(9.5),
-        if enabled { TEXT_DIM } else { TEXT_FAINT },
+        if enabled { c.text_dim } else { c.text_faint },
     );
     resp
 }
 
 /// Small readout cell: `TAG` above a coloured value.
 pub fn readout(ui: &mut Ui, width: f32, tag: &str, value: &str, color: Color32) {
+    let c = theme::c();
     let (rect, _) = ui.allocate_exact_size(vec2(width, 44.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, R, SURFACE);
-    p.rect_stroke(rect, R, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    p.rect_filled(rect, R, c.surface);
+    p.rect_stroke(rect, R, Stroke::new(1.0, c.line), StrokeKind::Inside);
     p.text(
         rect.left_top() + vec2(9.0, 8.0),
         Align2::LEFT_TOP,
         tag,
         theme::mono(9.5),
-        TEXT_FAINT,
+        c.text_faint,
     );
     p.circle_filled(pos2(rect.left() + 12.0, rect.bottom() - 13.0), 2.5, color);
     p.text(
@@ -225,6 +230,7 @@ pub fn readout(ui: &mut Ui, width: f32, tag: &str, value: &str, color: Color32) 
 
 /// Full-width row: label left, pill switch right. `changed()` on toggle.
 pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
+    let c = theme::c();
     let (rect, mut resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
     toggle_on_click(&mut resp, on);
     let track = Rect::from_min_size(
@@ -232,7 +238,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
         vec2(34.0, 18.0),
     );
     paint_switch(ui, &resp, track, *on);
-    let fg = if resp.hovered() { TEXT } else { TEXT_DIM };
+    let fg = if resp.hovered() { c.text } else { c.text_dim };
     ui.painter().text(
         pos2(rect.left(), rect.center().y),
         Align2::LEFT_CENTER,
@@ -245,15 +251,16 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
 
 /// Compact: small switch then label, sized to content.
 pub fn switch_inline(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
+    let c = theme::c();
     let galley = ui
         .painter()
-        .layout_no_wrap(label.to_string(), theme::mono(11.0), TEXT_DIM);
+        .layout_no_wrap(label.to_string(), theme::mono(11.0), c.text_dim);
     let size = vec2(28.0 + 8.0 + galley.size().x, 22.0);
     let (rect, mut resp) = ui.allocate_exact_size(size, Sense::click());
     toggle_on_click(&mut resp, on);
     let track = Rect::from_min_size(pos2(rect.left(), rect.center().y - 7.5), vec2(28.0, 15.0));
     paint_switch(ui, &resp, track, *on);
-    let fg = if resp.hovered() { TEXT } else { TEXT_DIM };
+    let fg = if resp.hovered() { c.text } else { c.text_dim };
     ui.painter().galley(
         pos2(track.right() + 8.0, rect.center().y - galley.size().y / 2.0),
         galley,
@@ -270,14 +277,15 @@ fn toggle_on_click(resp: &mut Response, on: &mut bool) {
 }
 
 fn paint_switch(ui: &Ui, resp: &Response, track: Rect, on: bool) {
+    let c = theme::c();
     let p = ui.painter();
     let t = ui.ctx().animate_bool_responsive(resp.id, on);
     let radius = CornerRadius::same((track.height() / 2.0) as u8);
-    p.rect_filled(track, radius, lerp_color(SURFACE_HI, theme::AMBER_LO, t));
+    p.rect_filled(track, radius, lerp_color(c.surface_hi, c.amber_lo, t));
     p.rect_stroke(
         track,
         radius,
-        Stroke::new(1.0, lerp_color(LINE, AMBER, t)),
+        Stroke::new(1.0, lerp_color(c.line, c.amber, t)),
         StrokeKind::Inside,
     );
     let inset = track.height() / 2.0;
@@ -285,27 +293,67 @@ fn paint_switch(ui: &Ui, resp: &Response, track: Rect, on: bool) {
     p.circle_filled(
         pos2(knob_x, track.center().y),
         inset - 3.0,
-        lerp_color(TEXT_DIM, AMBER, t),
+        lerp_color(c.text_dim, c.amber, t),
     );
 }
 
 /// Quiet text action: dim, amber + underline on hover.
 pub fn link(ui: &mut Ui, text: &str) -> Response {
+    let c = theme::c();
     let galley = ui
         .painter()
-        .layout_no_wrap(text.to_string(), theme::mono(10.5), TEXT_DIM);
+        .layout_no_wrap(text.to_string(), theme::mono(10.5), c.text_dim);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + vec2(4.0, 6.0), Sense::click());
-    let color = if resp.hovered() { AMBER } else { TEXT_DIM };
+    let color = if resp.hovered() { c.amber } else { c.text_dim };
     let pos = pos2(rect.left() + 2.0, rect.center().y - galley.size().y / 2.0);
     if resp.hovered() {
         let y = pos.y + galley.size().y + 0.5;
         ui.painter().line_segment(
             [pos2(pos.x, y), pos2(pos.x + galley.size().x, y)],
-            Stroke::new(1.0, AMBER),
+            Stroke::new(1.0, c.amber),
         );
     }
     ui.painter().galley(pos, galley, color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Segmented control: one of `options`, the selected one highlighted.
+pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str)]) -> bool {
+    let c = theme::c();
+    let gap = 4.0;
+    let w = (ui.available_width() - gap * (options.len() as f32 - 1.0)) / options.len() as f32;
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        for (option, label) in options {
+            let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+            let selected = *value == *option;
+            let (fill, stroke, fg) = match (selected, resp.hovered()) {
+                (true, _) => (c.amber_lo, c.amber, c.amber),
+                (false, true) => (c.surface_hover, c.line, c.text),
+                (false, false) => (c.surface_hi, c.line, c.text_dim),
+            };
+            let p = ui.painter();
+            p.rect_filled(rect, R, fill);
+            p.rect_stroke(rect, R, Stroke::new(1.0, stroke), StrokeKind::Inside);
+            p.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                *label,
+                theme::mono(11.0),
+                fg,
+            );
+            if resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+                && !selected
+            {
+                *value = *option;
+                changed = true;
+            }
+        }
+    });
+    changed
 }
 
 fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -315,12 +363,9 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 
 /// Hairline frame around the whole window (the drawn "border").
 pub fn window_frame(ui: &Ui, active: bool) {
+    let c = theme::c();
     let rect = ui.ctx().content_rect();
-    let color = if active {
-        Color32::from_rgb(0x38, 0x3D, 0x44)
-    } else {
-        LINE
-    };
+    let color = if active { c.text_faint } else { c.line };
     ui.painter().rect_stroke(
         rect,
         CornerRadius::ZERO,

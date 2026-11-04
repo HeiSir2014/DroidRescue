@@ -163,14 +163,19 @@ entropy kept so saved PINs still decrypt); public GitHub repo
 data (serials, user paths) scrubbed from tests/docs; GitHub Actions: fmt,
 clippy -D warnings, test, release build artifact on windows-latest.
 **Tests**: migration unit test; CI green.
-**Status**: In Progress
+**Status**: Complete — repo public, toolchain pinned (rust-toolchain.toml
+1.99.0), CI green (fmt, clippy, test, packaged artifact); migration verified
+on the dev PC (3 files carried over).
 
 ## Stage 9: Light / dark theme
 **Goal**: follow the OS theme (eframe system theme) with a manual
 override (跟随系统/亮色/暗色, persisted); every colour from a palette
 token, both palettes checked for contrast (text ≥ 4.5:1).
 **Tests**: palette contrast test; both themes render (screenshot check).
-**Status**: Not Started
+**Status**: Complete — contrast tests caught dark `text_faint` at 2.81:1
+(raised to ≥3:1); both themes screenshot-checked; HUD stays dark (it sits
+on a black scrim over video); migrated users reset to "follow system"
+(padctl had forced dark and egui persisted it).
 
 ## Stage 10: Rescue that works on any PC / port / mode
 **Why**: WinUSB binds per device *instance*, and instance ids depend on the

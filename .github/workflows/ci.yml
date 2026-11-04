@@ -13,7 +13,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust (version pinned by rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
@@ -22,7 +22,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -54,7 +54,7 @@ jobs:
           7z a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=64m -ms=on "dist/DroidRescue-$version-win-x64.7z" "./$stage/*"
           7z a -tzip -mm=Deflate -mx=9 -mfb=258 -mpass=15 "dist/DroidRescue-$version-win-x64.zip" "./$stage/*"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DroidRescue-windows-x64
           path: |
