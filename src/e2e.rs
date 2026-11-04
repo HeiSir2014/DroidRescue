@@ -122,6 +122,17 @@ fn e2e_adb_unlock_with_pin() {
         pin,
     };
     let keyguard = || adb::parse_keyguard_showing(&sh(&tools, &serial, adb::KEYGUARD_CMD));
+    // From awake, so SLEEP really locks with the new PIN (an already
+    // sleeping device would ignore it and show no keyguard).
+    sh(&tools, &serial, "input keyevent 224"); // WAKEUP
+    assert!(
+        wait_until(Duration::from_secs(5), || adb::parse_awake(&sh(
+            &tools,
+            &serial,
+            adb::AWAKE_CMD
+        )) == Some(true)),
+        "device did not wake"
+    );
     sh(&tools, &serial, "input keyevent 223"); // SLEEP
     assert!(
         wait_until(Duration::from_secs(5), || keyguard() == Some(true)),
