@@ -67,14 +67,10 @@ use widgets::CaptionIcon;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_LOG_LINES: usize = 500;
-/// Caption height. Windows: our own title bar. macOS: the row of the native
-/// traffic lights (transparent title bar, ~28 pt) — taller, the caption's
-/// text sat below the lights and the page painted over its lower half.
-const CAPTION_H: f32 = if cfg!(target_os = "macos") {
-    28.0
-} else {
-    40.0
-};
+/// Our own caption (title bar) height — Windows only. macOS uses the native
+/// title bar: content drawn under a transparent one gets partly covered by
+/// the system's title-bar layer (the app name showed only a sliver).
+const CAPTION_H: f32 = if OWN_CAPTION { 40.0 } else { 0.0 };
 const RESIZE_BORDER: f32 = 6.0;
 /// First-launch window: sidebar + a comfortable page.
 const DEFAULT_SIZE: [f32; 2] = [1120.0, 780.0];
@@ -206,24 +202,19 @@ fn app_icon() -> egui::IconData {
 }
 
 /// Window decorations. Windows: none — egui paints the caption and frame,
-/// chrome.rs hit-tests them natively. macOS: the native window with a
-/// transparent full-size title bar, so the traffic lights, resizing,
-/// shadow and rounded corners stay native and our caption shows through.
+/// chrome.rs hit-tests them natively. macOS: the standard native window
+/// (title bar with the app name, traffic lights, light/dark from the system).
 fn native_chrome(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
-    if cfg!(target_os = "macos") {
-        builder
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false)
-    } else {
+    if OWN_CAPTION {
         builder.with_decorations(false)
+    } else {
+        builder
     }
 }
 
-/// Room at the caption's left for the macOS traffic lights.
-const CAPTION_INSET: f32 = if cfg!(target_os = "macos") { 72.0 } else { 0.0 };
-/// The caption draws its own minimise / maximise / close buttons (Windows).
-const OWN_CAPTION_BUTTONS: bool = !cfg!(target_os = "macos");
+/// We draw the title bar, frame and window buttons ourselves (Windows,
+/// hit-tested natively by chrome.rs). macOS keeps the native title bar.
+const OWN_CAPTION: bool = !cfg!(target_os = "macos");
 
 /// Notepad on Windows, the default text editor (TextEdit) on macOS.
 fn open_in_text_editor(path: &std::path::Path) -> std::io::Result<std::process::Child> {
@@ -962,21 +953,11 @@ impl PadApp {
 
     // ───────────────────────── chrome ─────────────────────────
 
-    /// Draws the title bar; returns the left x of the caption controls.
+    /// Draws our title bar (Windows; non-client, hit-tested by chrome.rs);
+    /// returns the left x of the caption controls.
     fn caption(&mut self, ui: &mut egui::Ui, snap: &Snapshot, maximized: bool) -> f32 {
-        let (rect, drag) = ui.allocate_exact_size(
-            vec2(ui.available_width(), CAPTION_H),
-            egui::Sense::click_and_drag(),
-        );
-        // On Windows the caption is non-client (chrome.rs), so these events
-        // only arrive on macOS: drag moves the window, double-click zooms.
-        if drag.drag_started() {
-            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
-        }
-        if drag.double_clicked() {
-            ui.ctx()
-                .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
-        }
+        let (rect, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), CAPTION_H), egui::Sense::hover());
         let p = ui.painter();
         p.rect_filled(rect, 0.0, theme::c().surface);
         p.line_segment(
@@ -986,10 +967,10 @@ impl PadApp {
 
         let y = rect.center().y;
         let mark = p.text(
-            pos2(rect.left() + 14.0 + CAPTION_INSET, y),
+            pos2(rect.left() + 14.0, y),
             Align2::LEFT_CENTER,
             "安卓救援宝",
-            theme::strong_font(16.0),
+            theme::strong_font(15.0),
             theme::c().amber,
         );
         // The English name lives in the OS window title (taskbar, Alt-Tab):
@@ -1053,22 +1034,20 @@ impl PadApp {
                 controls_left = controls_left.min(r.rect.left());
                 r
             };
-            if OWN_CAPTION_BUTTONS {
-                if button(ui, CaptionIcon::Close, "关闭").clicked() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                }
-                let (icon, tip) = if maximized {
-                    (CaptionIcon::Restore, "还原")
-                } else {
-                    (CaptionIcon::Maximize, "最大化")
-                };
-                if button(ui, icon, tip).clicked() {
-                    ui.ctx()
-                        .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
-                }
-                if button(ui, CaptionIcon::Minimize, "最小化").clicked() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
-                }
+            if button(ui, CaptionIcon::Close, "关闭").clicked() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+            }
+            let (icon, tip) = if maximized {
+                (CaptionIcon::Restore, "还原")
+            } else {
+                (CaptionIcon::Maximize, "最大化")
+            };
+            if button(ui, icon, tip).clicked() {
+                ui.ctx()
+                    .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+            }
+            if button(ui, CaptionIcon::Minimize, "最小化").clicked() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
             }
         });
         controls_left
@@ -1558,15 +1537,16 @@ impl eframe::App for PadApp {
             .frame(egui::Frame::NONE.fill(theme::c().bg))
             .show(root, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                let controls_left = self.caption(ui, &snap, maximized);
-
-                let ppp = ctx.pixels_per_point();
-                chrome::set_layout(ChromeLayout {
-                    caption_height: (CAPTION_H * ppp).round() as i32,
-                    controls_left: (controls_left * ppp).round() as i32,
-                    border: (RESIZE_BORDER * ppp).round() as i32,
-                    resizable: if maximized { Edges::NONE } else { Edges::ALL },
-                });
+                if OWN_CAPTION {
+                    let controls_left = self.caption(ui, &snap, maximized);
+                    let ppp = ctx.pixels_per_point();
+                    chrome::set_layout(ChromeLayout {
+                        caption_height: (CAPTION_H * ppp).round() as i32,
+                        controls_left: (controls_left * ppp).round() as i32,
+                        border: (RESIZE_BORDER * ppp).round() as i32,
+                        resizable: if maximized { Edges::NONE } else { Edges::ALL },
+                    });
+                }
 
                 let body = ui.available_rect_before_wrap();
                 let nav_w = if compact {
@@ -1607,7 +1587,7 @@ impl eframe::App for PadApp {
                     });
                 }
                 self.log_drawer(ui, log_rect, &snap);
-                if OWN_CAPTION_BUTTONS {
+                if OWN_CAPTION {
                     // macOS draws its own window border.
                     widgets::window_frame(ui, focused);
                 }
