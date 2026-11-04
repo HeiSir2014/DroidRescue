@@ -19,7 +19,7 @@ impl PadApp {
                             RichText::new("在设备上开启 5555 端口的无线调试并自动连接，之后可以拔掉数据线（需在同一局域网）。")
                                 .color(theme::c().text_dim),
                         );
-                        if widgets::key(ui, "WIFI", "开启无线 ADB", vec2(ui.available_width(), 48.0), ready)
+                        if widgets::key(ui, "WIFI", "开启无线 ADB", vec2(180.0, 44.0), ready)
                             .clicked()
                         {
                             self.enable_wireless();

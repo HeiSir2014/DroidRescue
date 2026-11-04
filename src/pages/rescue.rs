@@ -188,12 +188,16 @@ impl PadApp {
             )
             .color(theme::c().text_dim),
         );
-        if ui
-            .button(RichText::new("编写 / 调试机型脚本 →").color(theme::c().amber))
-            .clicked()
-        {
-            self.page = Page::Script;
-        }
+        // In a row: the card's justified layout would stretch it into
+        // something that looks like a text field.
+        ui.horizontal(|ui| {
+            if ui
+                .button(RichText::new("编写 / 调试机型脚本 →").color(theme::c().amber))
+                .clicked()
+            {
+                self.page = Page::Script;
+            }
+        });
         ui.horizontal_wrapped(|ui| {
             if widgets::link(ui, "用文本编辑器打开配置文件")
                 .on_hover_text(profiles::path().display().to_string())
