@@ -214,7 +214,15 @@ fn e2e_mirror_session_streams_and_controls() {
     assert!(shared.ended.lock().unwrap().is_none());
 
     // Control channel: open Settings, press HOME through the session.
-    let focus = || sh(&tools, &serial, "dumpsys window | grep -m1 mCurrentFocus");
+    // The top resumed activity (mCurrentFocus is per display, and the
+    // server's mirror display lists first with focus=null).
+    let focus = || {
+        sh(
+            &tools,
+            &serial,
+            "dumpsys activity activities | grep -m1 topResumedActivity",
+        )
+    };
     sh(&tools, &serial, "am start -W -a android.settings.SETTINGS");
     assert!(
         wait_until(Duration::from_secs(5), || focus().contains("settings")),
