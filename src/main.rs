@@ -1168,9 +1168,10 @@ impl PadApp {
             theme::strong_font(15.0),
             theme::c().text,
         );
+        let version = widgets::version_tag(p, pos2(mark.right() + 8.0, y), APP_VERSION);
         // The English name lives in the OS window title (taskbar, Alt-Tab).
         let status = self.device_status(snap);
-        let lamp_c = pos2(mark.right() + 14.0, y);
+        let lamp_c = pos2(version.right() + 16.0, y);
         nav::paint_status(p, lamp_c, &status);
 
         let mut controls_left = rect.right();
@@ -1827,8 +1828,17 @@ fn zero_copy_wgpu_setup() -> egui_wgpu::WgpuSetup {
     egui_wgpu::WgpuSetup::CreateNew(setup)
 }
 
-/// Window title / product name (Chinese name first, English name for search).
+/// Product name (Chinese name first, English name for search). Also
+/// eframe's app id — it names where window state persists, so it must not
+/// change between versions.
 const APP_TITLE: &str = "安卓救援宝 DroidRescue";
+/// The version as shown to users ("v0.2.0").
+const APP_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+
+/// The OS window title (taskbar, Alt-Tab, macOS title bar): name + version.
+fn window_title() -> String {
+    format!("{APP_TITLE} {APP_VERSION}")
+}
 
 fn main() -> eframe::Result {
     // Before anything reads the data dir (log, PINs, window state).
@@ -1857,7 +1867,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: native_chrome(
             egui::ViewportBuilder::default()
-                .with_title(APP_TITLE)
+                .with_title(window_title())
                 .with_icon(app_icon())
                 .with_inner_size(DEFAULT_SIZE)
                 .with_min_inner_size(min_window_size(false)),
@@ -1928,6 +1938,16 @@ mod tests {
         assert_eq!((nav_rect.left(), nav_rect.width()), (0.0, nav::NAV_W));
         assert_eq!((page.left(), page.right()), (nav::NAV_W, 1000.0));
         assert_eq!(page.top(), 40.0);
+    }
+
+    #[test]
+    fn window_title_shows_the_version_but_the_app_id_stays_fixed() {
+        assert_eq!(
+            window_title(),
+            format!("安卓救援宝 DroidRescue v{}", env!("CARGO_PKG_VERSION"))
+        );
+        // eframe stores window state under this name: never versioned.
+        assert_eq!(APP_TITLE, "安卓救援宝 DroidRescue");
     }
 
     #[test]

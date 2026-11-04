@@ -122,12 +122,17 @@ pub fn sidebar(
         let logo = Rect::from_center_size(pos2(logo_x, y + 14.0), vec2(logo_size, logo_size));
         crate::icons::brand_mark(&p, logo);
         if !collapsed {
-            p.text(
+            let name = p.text(
                 pos2(logo.right() + 10.0, logo.center().y),
                 egui::Align2::LEFT_CENTER,
                 "安卓救援宝",
                 theme::strong_font(15.0),
                 c.text,
+            );
+            crate::widgets::version_tag(
+                &p,
+                pos2(name.right() + 6.0, logo.center().y),
+                crate::APP_VERSION,
             );
         }
         y += BRAND_H;
