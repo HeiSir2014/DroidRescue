@@ -1,0 +1,5 @@
+# One compiler for every machine and CI, so lints and codegen never drift.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

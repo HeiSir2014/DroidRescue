@@ -21,9 +21,9 @@ const fn frames_for_ms(ms: u32) -> usize {
 
 /// Interleaved s16le bytes → stereo frames in [-1, 1].
 pub fn s16le_to_frames(bytes: &[u8]) -> impl Iterator<Item = [f32; 2]> + '_ {
-    bytes.chunks_exact(4).map(|c| {
-        let l = i16::from_le_bytes([c[0], c[1]]);
-        let r = i16::from_le_bytes([c[2], c[3]]);
+    bytes.as_chunks::<4>().0.iter().map(|&[l0, l1, r0, r1]| {
+        let l = i16::from_le_bytes([l0, l1]);
+        let r = i16::from_le_bytes([r0, r1]);
         [f32::from(l) / 32768.0, f32::from(r) / 32768.0]
     })
 }

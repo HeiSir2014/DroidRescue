@@ -322,8 +322,10 @@ mod tests {
     fn multi_sz_is_utf16_with_double_nul_terminator() {
         let data = multi_sz(&["{A}"]);
         let wide: Vec<u16> = data
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
             .collect();
         assert_eq!(
             wide,
