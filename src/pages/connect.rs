@@ -2,7 +2,7 @@
 //! Android 11+ pairing) — and, for broken screens, the way to 救援.
 
 use crate::nav::Page;
-use crate::{PadApp, Snapshot, log_result, run_adb, theme, widgets};
+use crate::{PadApp, Snapshot, log_result, theme, widgets};
 use eframe::egui::{
     self, Color32, Margin, Painter, Pos2, Rect, RichText, Stroke, StrokeKind, pos2, vec2,
 };
@@ -158,7 +158,7 @@ impl PadApp {
                     log_result(
                         sh,
                         &format!("adb pair {addr}"),
-                        run_adb(t, None, &["pair", &addr, &code]),
+                        t.run(None, &["pair", &addr, &code]),
                     );
                 });
             }
@@ -178,7 +178,7 @@ impl PadApp {
                     log_result(
                         sh,
                         &format!("adb connect {addr}"),
-                        run_adb(t, None, &["connect", &addr]),
+                        t.run(None, &["connect", &addr]),
                     );
                 });
             }

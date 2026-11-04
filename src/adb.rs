@@ -78,6 +78,13 @@ pub fn stale_scrcpy_forwards(list: &str, serial: &str) -> Vec<String> {
         .collect()
 }
 
+/// Status queries of the background poller (outputs feed the parsers below).
+pub const SERIALNO_CMD: &str = "getprop ro.serialno";
+pub const REFRESH_CMD: &str = "dumpsys display | grep -oE 'fps=[0-9.]+'";
+pub const AWAKE_CMD: &str = "dumpsys power | grep mWakefulness=";
+pub const KEYGUARD_CMD: &str = "dumpsys window | grep isKeyguardShowing";
+pub const ORIENTATION_CMD: &str = "dumpsys input | grep -m1 'Viewport INTERNAL'";
+
 /// Shell command whose three output lines feed `friendly_name`.
 pub const FRIENDLY_NAME_CMD: &str =
     "settings get global device_name; getprop ro.product.marketname; getprop ro.vivo.market.name";
@@ -203,6 +210,21 @@ impl Tools {
         self.adb_command(serial, args).stdin(Stdio::null()).output()
     }
 
+    /// Run adb; Ok(last output line) or Err(reason) — see [`outcome`].
+    pub fn run(&self, serial: Option<&str>, args: &[&str]) -> Result<String, String> {
+        let out = self
+            .adb(serial, args)
+            .map_err(|e| format!("无法运行 adb: {e}"))?;
+        outcome(
+            out.status.success(),
+            &format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    }
+
     /// Run `adb shell <cmd>` and return stdout (stderr appended on failure).
     pub fn shell(&self, serial: Option<&str>, cmd: &str) -> Result<String, String> {
         let out = self
@@ -216,6 +238,112 @@ impl Tools {
             Err(format!("`{cmd}` 失败: {stderr} {stdout}"))
         }
     }
+}
+
+/// The result of an adb command from its exit status and output: the last
+/// non-empty line, as an error when adb failed — including the commands that
+/// exit 0 on failure (`adb connect` prints "failed to connect …", `adb pair`
+/// "Failed: …").
+pub fn outcome(success: bool, output: &str) -> Result<String, String> {
+    let last = output
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let lower = last.to_ascii_lowercase();
+    let reported_failure = ["failed", "cannot", "unable to", "error:"]
+        .iter()
+        .any(|w| lower.contains(w));
+    if success && !reported_failure {
+        Ok(last)
+    } else {
+        Err(last)
+    }
+}
+
+/// The adb-input unlock sequence (wake, swipe the keyguard, PIN, Enter),
+/// as (step name, shell command). The PIN is in the third command only.
+pub fn unlock_commands(password: &str) -> [(&'static str, String); 4] {
+    [
+        ("唤醒", "input keyevent 224".to_string()),
+        ("上滑", SWIPE_UP_CMD.to_string()),
+        (
+            "输入密码",
+            format!("input text {}", quote_input_text(password)),
+        ),
+        ("回车", "input keyevent 66".to_string()),
+    ]
+}
+
+/// Unlock with adb `input`, pausing for the keyguard's animations. Errors
+/// never contain the password.
+pub fn unlock(tools: &Tools, serial: Option<&str>, password: &str) -> Result<(), String> {
+    let secret = quote_input_text(password);
+    for (name, cmd) in unlock_commands(password) {
+        tools
+            .shell(serial, &cmd)
+            .map_err(|e| format!("解锁/{name} 失败: {}", e.replace(&secret, "***")))?;
+        std::thread::sleep(std::time::Duration::from_millis(600));
+    }
+    Ok(())
+}
+
+/// Device folders exported by 导出照片/文件.
+pub const BACKUP_DIRS: [&str; 6] = [
+    "DCIM",
+    "Pictures",
+    "Download",
+    "Documents",
+    "Movies",
+    "Music",
+];
+
+/// Copy [`BACKUP_DIRS`] from the device into `dest` (`adb pull -a`, keeps
+/// times). Folders the device does not have are skipped, not errors.
+/// Returns how many folders were copied.
+pub fn backup(tools: &Tools, serial: Option<&str>, dest: &Path, log: &dyn Fn(String)) -> usize {
+    if let Err(e) = std::fs::create_dir_all(dest) {
+        log(format!("✘ 无法创建 {}: {e}", dest.display()));
+        return 0;
+    }
+    let dest_str = dest.to_string_lossy();
+    let mut copied = 0;
+    for dir in BACKUP_DIRS {
+        let src = format!("/sdcard/{dir}");
+        if tools.shell(serial, &format!("test -d {src}")).is_err() {
+            continue; // not on this device
+        }
+        log(format!("… 导出 {src}"));
+        match tools.run(serial, &["pull", "-a", &src, &dest_str]) {
+            Ok(out) => {
+                copied += 1;
+                log(format!("✔ 导出 {dir}: {out}"));
+            }
+            Err(e) => log(format!("✘ 导出 {dir}: {e}")),
+        }
+    }
+    copied
+}
+
+/// Turn on adb over Wi-Fi (port 5555) and connect to it; returns `ip:5555`.
+pub fn enable_wireless(tools: &Tools, serial: Option<&str>) -> Result<String, String> {
+    let out = tools
+        .shell(serial, "ip -f inet addr show wlan0")
+        .map_err(|e| format!("获取 IP 失败: {e}"))?;
+    let ip = parse_wlan_ip(&out).ok_or("设备没连 WiFi（wlan0 没有 IP）")?;
+    tools.run(serial, &["tcpip", "5555"])?;
+    let target = format!("{ip}:5555");
+    // adbd restarts in TCP mode: give it a moment, then retry a few times.
+    let mut last = String::new();
+    for _ in 0..5 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        match tools.run(None, &["connect", &target]) {
+            Ok(_) => return Ok(target),
+            Err(e) => last = e,
+        }
+    }
+    Err(format!("adb connect {target} 失败: {last}"))
 }
 
 /// Swipe up the keyguard on any device: vertical stroke along the short
@@ -248,6 +376,40 @@ fn hidden_command(program: &Path) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adb_failures_that_exit_zero_are_errors() {
+        assert_eq!(
+            outcome(
+                true,
+                "failed to connect to '10.0.0.9:5555': Connection refused\n"
+            ),
+            Err("failed to connect to '10.0.0.9:5555': Connection refused".into())
+        );
+        assert!(outcome(true, "Failed: Wrong password or connection was dropped.").is_err());
+        assert_eq!(
+            outcome(true, "connected to 10.0.0.9:5555\n\n"),
+            Ok("connected to 10.0.0.9:5555".into())
+        );
+        assert_eq!(outcome(true, "\n"), Ok(String::new()));
+        assert!(
+            outcome(
+                false,
+                "adb: error: remote object '/sdcard/X' does not exist"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unlock_commands_keep_the_pin_in_one_quoted_command() {
+        let cmds = unlock_commands("12 34");
+        let with_pin: Vec<_> = cmds.iter().filter(|(_, c)| c.contains("12%s34")).collect();
+        assert_eq!(with_pin.len(), 1);
+        assert_eq!(with_pin[0].1, "input text '12%s34'");
+        assert_eq!(cmds[0].1, "input keyevent 224", "wake first");
+        assert_eq!(cmds[3].1, "input keyevent 66", "enter last");
+    }
 
     #[test]
     fn short_hold_is_a_tap() {

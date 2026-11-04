@@ -17,6 +17,8 @@ mod decoder_mf;
 #[cfg(target_os = "macos")]
 #[path = "macos/decoder_vt.rs"]
 mod decoder_vt;
+#[cfg(test)]
+mod e2e;
 mod geometry;
 mod guide;
 mod input;
@@ -275,7 +277,7 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
 
             if let Some(ser) = serial.as_deref()
                 && !shared.lock().unwrap().device_ids.contains_key(ser)
-                && let Ok(hw) = tools.shell(Some(ser), "getprop ro.serialno")
+                && let Ok(hw) = tools.shell(Some(ser), adb::SERIALNO_CMD)
             {
                 let id = if hw.is_empty() { ser.to_string() } else { hw };
                 shared
@@ -288,7 +290,7 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
             if let Some(ser) = serial.as_deref()
                 && !shared.lock().unwrap().device_hz.contains_key(ser)
                 && let Some(hz) = tools
-                    .shell(Some(ser), "dumpsys display | grep -oE 'fps=[0-9.]+'")
+                    .shell(Some(ser), adb::REFRESH_CMD)
                     .ok()
                     .and_then(|o| adb::parse_max_refresh(&o))
             {
@@ -313,15 +315,15 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
             let (awake, locked, orientation) = match serial.as_deref() {
                 Some(ser) => (
                     tools
-                        .shell(Some(ser), "dumpsys power | grep mWakefulness=")
+                        .shell(Some(ser), adb::AWAKE_CMD)
                         .ok()
                         .and_then(|o| adb::parse_awake(&o)),
                     tools
-                        .shell(Some(ser), "dumpsys window | grep isKeyguardShowing")
+                        .shell(Some(ser), adb::KEYGUARD_CMD)
                         .ok()
                         .and_then(|o| adb::parse_keyguard_showing(&o)),
                     tools
-                        .shell(Some(ser), "dumpsys input | grep -m1 'Viewport INTERNAL'")
+                        .shell(Some(ser), adb::ORIENTATION_CMD)
                         .ok()
                         .and_then(|o| protocol::parse_orientation(&o)),
                 ),
@@ -881,73 +883,35 @@ impl PadApp {
     }
 
     fn send_unlock(&self, password: &str) {
-        let text = adb::quote_input_text(password);
+        let password = password.to_string();
         self.run_task("解锁", move |t, ser, sh| {
-            let steps = [
-                ("唤醒", "input keyevent 224".to_string()),
-                ("上滑", adb::SWIPE_UP_CMD.to_string()),
-                ("输入密码", format!("input text {text}")),
-                ("回车", "input keyevent 66".to_string()),
-            ];
-            for (name, cmd) in steps {
-                if let Err(e) = t.shell(ser, &cmd) {
-                    // Never echo the command: it may contain the password.
-                    log(
-                        sh,
-                        format!("✘ 解锁/{name} 失败: {}", e.replace(&text, "***")),
-                    );
-                    return;
-                }
-                thread::sleep(Duration::from_millis(600));
+            match adb::unlock(t, ser, &password) {
+                Ok(()) => log(sh, "✔ 已发送解锁序列"),
+                Err(e) => log(sh, format!("✘ {e}")),
             }
-            log(sh, "✔ 已发送解锁序列");
         });
     }
 
     fn enable_wireless(&self) {
         self.run_task("无线调试", |t, ser, sh| {
-            let ip = match t.shell(ser, "ip -f inet addr show wlan0") {
-                Ok(out) => adb::parse_wlan_ip(&out),
-                Err(e) => return log(sh, format!("✘ 获取 IP 失败: {e}")),
-            };
-            let Some(ip) = ip else {
-                return log(sh, "✘ 平板没连 WiFi（wlan0 没有 IP）");
-            };
-            log_result(sh, "adb tcpip 5555", run_adb(t, ser, &["tcpip", "5555"]));
-            thread::sleep(Duration::from_secs(2));
-            let target = format!("{ip}:5555");
-            log_result(
-                sh,
-                &format!("adb connect {target}"),
-                run_adb(t, None, &["connect", &target]),
-            );
-            log(sh, "拔掉 USB 后在设备列表里选 IP 那一项即可无线投屏");
+            match adb::enable_wireless(t, ser) {
+                Ok(target) => log(
+                    sh,
+                    format!("✔ 已无线连接 {target}：拔掉数据线后在首页选这台设备即可"),
+                ),
+                Err(e) => log(sh, format!("✘ 无线 ADB: {e}")),
+            }
         });
     }
 
     fn backup(&self) {
-        let dest = self.backup_dir.clone();
+        let dest = std::path::PathBuf::from(&self.backup_dir);
         self.run_task("备份", move |t, ser, sh| {
-            if let Err(e) = std::fs::create_dir_all(&dest) {
-                return log(sh, format!("✘ 无法创建 {dest}: {e}"));
-            }
-            for dir in [
-                "DCIM",
-                "Pictures",
-                "Download",
-                "Documents",
-                "Movies",
-                "Music",
-            ] {
-                log(sh, format!("… 导出 /sdcard/{dir}"));
-                let src = format!("/sdcard/{dir}");
-                log_result(
-                    sh,
-                    &format!("导出 {dir}"),
-                    run_adb(t, ser, &["pull", "-a", &src, &dest]),
-                );
-            }
-            log(sh, format!("✔ 备份完成 → {dest}"));
+            let copied = adb::backup(t, ser, &dest, &|line| log(sh, line));
+            log(
+                sh,
+                format!("✔ 导出完成（{copied} 个文件夹）→ {}", dest.display()),
+            );
         });
     }
 
@@ -1450,25 +1414,6 @@ fn combo_row<T: PartialEq + Copy>(
                 });
         });
     });
-}
-
-fn run_adb(t: &Tools, serial: Option<&str>, args: &[&str]) -> Result<String, String> {
-    let out = t.adb(serial, args).map_err(|e| e.to_string())?;
-    let text = format!(
-        "{} {}",
-        String::from_utf8_lossy(&out.stdout).trim(),
-        String::from_utf8_lossy(&out.stderr).trim()
-    )
-    .trim()
-    .lines()
-    .last()
-    .unwrap_or("")
-    .to_string();
-    if out.status.success() {
-        Ok(text)
-    } else {
-        Err(text)
-    }
 }
 
 impl eframe::App for PadApp {
