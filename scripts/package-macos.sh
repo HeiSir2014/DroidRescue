@@ -50,5 +50,16 @@ codesign --verify --strict "$APP"
 ln -s /Applications "$STAGE/Applications"
 DMG="dist/DroidRescue-$VERSION-macos-$ARCH.dmg"
 rm -f "$DMG"
-hdiutil create -quiet -volname "安卓救援宝 DroidRescue" -srcfolder "$STAGE" -format ULMO "$DMG"
+# hdiutil fails intermittently on CI runners ("Resource busy"): retry.
+attempt=1
+until hdiutil create -volname "安卓救援宝 DroidRescue" -srcfolder "$STAGE" -format ULMO "$DMG"; do
+  if [ "$attempt" -ge 3 ]; then
+    echo "hdiutil create failed $attempt times" >&2
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+  echo "hdiutil create failed; retrying ($attempt/3)" >&2
+  rm -f "$DMG"
+  sleep 5
+done
 echo "packaged $DMG ($(du -h "$DMG" | cut -f1))"
