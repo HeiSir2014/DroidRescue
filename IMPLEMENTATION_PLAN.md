@@ -220,7 +220,10 @@ notarisation (needs an Apple Developer account — owner's decision).
 SHA256SUMS, creates a **draft** release with notes from CHANGELOG.md.
 **Tests**: icon decodes (unit test); exe VersionInfo/icon checked; draft
 release v0.2.0 contains win 7z/zip + mac dmg + SHA256SUMS.
-**Status**: In Progress
+**Done**: draft v0.2.0 built by CI (first macOS run hit an hdiutil flake →
+retry added); Windows zip copied to YANTAO G:\soft, SHA256 verified.
+**Pending**: owner smoke-tests the draft's builds on devices, then publishes.
+**Status**: Complete
 
 ## Stage 13: macOS zero-copy video
 **Goal**: VideoToolbox CVPixelBuffer (IOSurface) → Metal NV12 textures via
