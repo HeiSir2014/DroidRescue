@@ -161,6 +161,13 @@ fn default_backup_dir() -> String {
         .to_string()
 }
 
+/// Window / taskbar / Dock icon (rendered from assets/icon/droidrescue.svg
+/// by scripts/make-icons.sh; the exe and .app icons are separate files).
+fn app_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/droidrescue-256.png"))
+        .expect("embedded icon is a valid PNG")
+}
+
 /// Window decorations. Windows: none — egui paints the caption and frame,
 /// chrome.rs hit-tests them natively. macOS: the native window with a
 /// transparent full-size title bar, so the traffic lights, resizing,
@@ -2057,6 +2064,7 @@ fn main() -> eframe::Result {
         viewport: native_chrome(
             egui::ViewportBuilder::default()
                 .with_title(APP_TITLE)
+                .with_icon(app_icon())
                 .with_inner_size(DEFAULT_SIZE)
                 .with_min_inner_size(MIN_SIZE),
         ),
@@ -2115,6 +2123,12 @@ mod tests {
     fn window_minimum_fits_the_rail() {
         assert!(min_window_size(false).x >= RAIL_W);
         assert!(DEFAULT_SIZE[0] >= min_window_size(false).x);
+    }
+
+    #[test]
+    fn app_icon_decodes() {
+        let icon = app_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
     }
 
     #[test]

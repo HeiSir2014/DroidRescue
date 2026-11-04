@@ -19,6 +19,7 @@ APP="$STAGE/DroidRescue.app"
 rm -rf "$STAGE"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/droidrescue "$APP/Contents/MacOS/DroidRescue"
+cp assets/icon/droidrescue.icns "$APP/Contents/Resources/AppIcon.icns"
 cp docs/使用说明.txt "$STAGE/"
 
 cat > "$APP/Contents/Info.plist" <<EOF
@@ -30,6 +31,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleDisplayName</key><string>安卓救援宝</string>
   <key>CFBundleIdentifier</key><string>io.github.heisir2014.droidrescue</string>
   <key>CFBundleExecutable</key><string>DroidRescue</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>

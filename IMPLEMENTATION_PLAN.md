@@ -209,9 +209,25 @@ traffic-light title bar; darwin adb bundle (`fetch-vendor.sh`);
 `package-macos.sh` → ad-hoc signed .app in an LZMA .dmg; CI macos job
 (fmt, clippy, tests incl. a real VideoToolbox decode, package).
 **Pending**: device test (mirror + rescue) on a Mac with a phone attached;
-zero-copy IOSurface → Metal; Developer ID signing + notarisation; app icon
-(both platforms).
+zero-copy IOSurface → Metal (Stage 13); Developer ID signing +
+notarisation (needs an Apple Developer account — owner's decision).
 **Status**: In Progress (runs; device verification pending)
+
+## Stage 12: Release pipeline + app icon
+**Goal**: one SVG icon → .ico (PNG entries) / .icns / window PNG
+(`scripts/make-icons.sh`); exe icon + version info (winresource); tag
+`vX.Y.Z` → CI builds both platforms, checks tag == Cargo version, adds
+SHA256SUMS, creates a **draft** release with notes from CHANGELOG.md.
+**Tests**: icon decodes (unit test); exe VersionInfo/icon checked; draft
+release v0.2.0 contains win 7z/zip + mac dmg + SHA256SUMS.
+**Status**: In Progress
+
+## Stage 13: macOS zero-copy video
+**Goal**: VideoToolbox CVPixelBuffer (IOSurface) → Metal NV12 textures via
+wgpu's Metal hal, like the D3D12 path on Windows; CPU read-back stays as
+fallback.
+**Tests**: decode fixture → imported texture; HUD shows decoder path.
+**Status**: Not Started
 
 ## Stage 5b: Window/rail stability
 **Goal**: start/stop mirroring resizes in one SetWindowPos keeping the rail's

@@ -10,6 +10,10 @@ cpal = "0.18.2"
 eframe = { version = "0.35.0", features = ["persistence"] }
 raw-window-handle = "0.6"
 
+[build-dependencies]
+# Windows exe icon + version info (only invoked when the target is Windows).
+winresource = "0.1.34"
+
 [target.'cfg(windows)'.dependencies]
 # Bundled FFmpeg DLLs (CPU decode fallback).
 libloading = "0.9.0"

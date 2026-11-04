@@ -22,8 +22,28 @@ const WINDOWS_FILES: &[&str] = &[
 /// macOS decodes with VideoToolbox: no FFmpeg.
 const MACOS_FILES: &[&str] = &["adb", "scrcpy-server", "LICENSE.txt"];
 
+/// Exe icon and Explorer "Details" (version info from Cargo.toml).
+fn windows_resources() {
+    println!("cargo:rerun-if-changed=assets/icon/droidrescue.ico");
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon("assets/icon/droidrescue.ico");
+    res.set("ProductName", "安卓救援宝 DroidRescue");
+    res.set("FileDescription", "安卓救援宝 DroidRescue");
+    res.set("OriginalFilename", "DroidRescue.exe");
+    res.set(
+        "LegalCopyright",
+        "https://github.com/HeiSir2014/DroidRescue",
+    );
+    res.compile()
+        .expect("embedding the Windows icon / version info (rc.exe)");
+}
+
 fn main() {
-    let macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "windows" {
+        windows_resources();
+    }
+    let macos = target_os == "macos";
     let (vendor, files) = if macos {
         ("scrcpy-macos", MACOS_FILES)
     } else {
