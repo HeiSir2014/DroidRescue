@@ -2,7 +2,7 @@
 //! actions and a drawing of the device — then unlocking and system keys.
 
 use super::{ConnectTab, card, tag};
-use crate::icons::{self, Glyph};
+use crate::icons::{self, Glyph, KeyIcon};
 use crate::nav::{self, Page};
 use crate::{PadApp, Snapshot, rescue, skin, theme, widgets};
 use eframe::egui::{self, Align, Layout, Margin, Rect, RichText, Sense, vec2};
@@ -202,7 +202,8 @@ impl PadApp {
             let can_unlock =
                 route != rescue::UnlockRoute::None && (saved || !self.password.is_empty());
             let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let clicked = widgets::key(ui, "ENTER", "解锁", vec2(72.0, 34.0), can_unlock).clicked();
+            let clicked =
+                widgets::key(ui, KeyIcon::Unlock, "解锁", vec2(72.0, 34.0), can_unlock).clicked();
             if (clicked || enter) && can_unlock {
                 let script = self
                     .profile(snap)
@@ -246,22 +247,25 @@ impl PadApp {
         let gap = ui.spacing().item_spacing.x;
         let w3 = (ui.available_width() - gap * 2.0) / 3.0;
         ui.horizontal(|ui| {
-            for (glyph, label, code) in [("◁", "返回", 4), ("○", "主页", 3), ("▢", "多任务", 187)]
-            {
-                if widgets::key(ui, glyph, label, vec2(w3, 48.0), ready).clicked() {
+            for (icon, label, code) in [
+                (KeyIcon::Back, "返回", 4),
+                (KeyIcon::Home, "主页", 3),
+                (KeyIcon::Recents, "多任务", 187),
+            ] {
+                if widgets::key(ui, icon, label, vec2(w3, 52.0), ready).clicked() {
                     self.press_key(code);
                 }
             }
         });
         let w4 = (ui.available_width() - gap * 3.0) / 4.0;
         ui.horizontal(|ui| {
-            for (glyph, label, code) in [
-                ("PWR", "电源", 26),
-                ("VOL−", "音量", 25),
-                ("VOL+", "音量", 24),
-                ("WAKE", "唤醒", 224),
+            for (icon, label, code) in [
+                (KeyIcon::Power, "电源", 26),
+                (KeyIcon::VolDown, "音量 −", 25),
+                (KeyIcon::VolUp, "音量 +", 24),
+                (KeyIcon::Wake, "唤醒", 224),
             ] {
-                if widgets::key(ui, glyph, label, vec2(w4, 48.0), ready).clicked() {
+                if widgets::key(ui, icon, label, vec2(w4, 52.0), ready).clicked() {
                     self.press_key(code);
                 }
             }

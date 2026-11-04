@@ -3,7 +3,7 @@
 //! card with the mirroring options.
 
 use super::{card, page_header};
-use crate::icons::Glyph;
+use crate::icons::{Glyph, KeyIcon};
 use crate::{PadApp, Snapshot, combo_row, control, theme, widgets};
 use eframe::egui::{self, Rect, RichText, vec2};
 use std::sync::atomic::Ordering;
@@ -44,21 +44,21 @@ impl PadApp {
     }
 
     fn key_strip(&mut self, ui: &mut egui::Ui) {
-        let size = vec2(ui.available_width(), 46.0);
-        if widgets::key(ui, "■", "停止投屏", size, true).clicked() {
+        let size = vec2(ui.available_width(), 50.0);
+        if widgets::key(ui, KeyIcon::Stop, "停止投屏", size, true).clicked() {
             self.stop_mirror();
             return;
         }
         ui.add_space(4.0);
-        for (glyph, label, code) in [
-            ("◁", "返回", 4),
-            ("○", "主页", 3),
-            ("▢", "多任务", 187),
-            ("PWR", "电源", 26),
-            ("VOL−", "音量", 25),
-            ("VOL+", "音量", 24),
+        for (icon, label, code) in [
+            (KeyIcon::Back, "返回", 4),
+            (KeyIcon::Home, "主页", 3),
+            (KeyIcon::Recents, "多任务", 187),
+            (KeyIcon::Power, "电源", 26),
+            (KeyIcon::VolDown, "音量 −", 25),
+            (KeyIcon::VolUp, "音量 +", 24),
         ] {
-            if widgets::key(ui, glyph, label, size, true).clicked() {
+            if widgets::key(ui, icon, label, size, true).clicked() {
                 self.press_key(code);
             }
         }
@@ -66,22 +66,22 @@ impl PadApp {
         let screen_off = self
             .session()
             .is_some_and(|s| s.shared.screen_off.load(Ordering::Relaxed));
-        let (glyph, label) = if screen_off {
-            ("ON", "点亮屏幕")
+        let (icon, label) = if screen_off {
+            (KeyIcon::ScreenOn, "点亮屏幕")
         } else {
-            ("OFF", "熄灭屏幕")
+            (KeyIcon::ScreenOff, "熄灭屏幕")
         };
-        if widgets::key(ui, glyph, label, size, true).clicked()
+        if widgets::key(ui, icon, label, size, true).clicked()
             && let Some(s) = self.session()
         {
             s.set_screen_off(!screen_off);
         }
-        if widgets::key(ui, "NOTIF", "通知栏", size, true).clicked()
+        if widgets::key(ui, KeyIcon::Notifications, "通知栏", size, true).clicked()
             && let Some(s) = self.session()
         {
             s.send(&control::expand_notification_panel());
         }
-        if widgets::key(ui, "ROT", "旋转", size, true).clicked()
+        if widgets::key(ui, KeyIcon::Rotate, "旋转", size, true).clicked()
             && let Some(s) = self.session()
         {
             s.send(&control::rotate_device());

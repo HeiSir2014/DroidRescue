@@ -23,6 +23,7 @@ mod geometry;
 mod guide;
 mod icons;
 mod input;
+mod logbar;
 mod mirror;
 mod nav;
 mod pages;
@@ -89,8 +90,8 @@ const MIN_STAGE_W: f32 = 200.0;
 const MIN_PAGE_W: f32 = 620.0;
 const MIN_HEIGHT: f32 = 600.0;
 /// Log drawer: closed (one line) and open heights.
-const LOG_CLOSED_H: f32 = 30.0;
-const LOG_OPEN_H: f32 = 200.0;
+const LOG_CLOSED_H: f32 = 34.0;
+const LOG_OPEN_H: f32 = 240.0;
 const _: () = assert!(DEFAULT_SIZE[1] >= MIN_HEIGHT && DEFAULT_SIZE[0] >= nav::NAV_W + MIN_PAGE_W);
 
 /// Smallest window: full sidebar + a usable page, or — while showing the
@@ -143,7 +144,7 @@ struct Shared {
     /// Rescue USB functions declared by the profiles (for the poller).
     usb_targets: Vec<usbid::UsbTarget>,
     tasks: Vec<String>,
-    log: Vec<String>,
+    log: Vec<logbar::Entry>,
 }
 
 type SharedRef = Arc<Mutex<Shared>>;
@@ -178,7 +179,7 @@ fn log(shared: &SharedRef, msg: impl Into<String>) {
         );
     }
     let mut s = shared.lock().unwrap();
-    s.log.push(msg);
+    s.log.push(logbar::Entry::new(&msg));
     let overflow = s.log.len().saturating_sub(MAX_LOG_LINES);
     s.log.drain(..overflow);
 }
@@ -404,7 +405,7 @@ struct Snapshot {
     usb_serials: Vec<String>,
     usb_present: Vec<usbid::UsbTarget>,
     tasks: Vec<String>,
-    log: Vec<String>,
+    log: Vec<logbar::Entry>,
 }
 
 impl Snapshot {
@@ -510,6 +511,8 @@ struct PadApp {
     connect_form: pages::ConnectForm,
     /// Log drawer expanded.
     log_open: bool,
+    /// Last log entry seen with the drawer open: newer errors get a badge.
+    log_seen: u64,
     workbench: workbench::Workbench,
     /// Window width when not showing the mirror (the user's choice),
     /// restored after it.
@@ -549,10 +552,8 @@ impl PadApp {
         shared.lock().unwrap().usb_targets = profiles::usb_targets(&profile_list);
         let tools = match Tools::locate() {
             Ok(t) => {
-                log(
-                    &shared,
-                    format!("server {} · {}", t.server_version, t.dir.display()),
-                );
+                // Readable in the status bar (the folder is in 设置 → 数据).
+                log(&shared, format!("就绪 · 投屏组件 {}", t.server_version));
                 spawn_poller(t.clone(), shared.clone(), cc.egui_ctx.clone());
                 Some(t)
             }
@@ -599,6 +600,7 @@ impl PadApp {
             connect: None,
             connect_form: pages::ConnectForm::default(),
             log_open: false,
+            log_seen: 0,
             workbench: workbench::Workbench::default(),
             idle_width: DEFAULT_SIZE[0],
             sized_once: false,
@@ -673,8 +675,11 @@ impl PadApp {
         }
     }
 
-    /// Bottom drawer: the last log line, or the full log when open.
+    /// Bottom status bar: a log toggle, what is happening now (running task
+    /// or latest message, with a level icon and how long ago), unseen
+    /// errors; expanded, the whole log with copy / clear / open-file.
     fn log_drawer(&mut self, ui: &mut egui::Ui, rect: Rect, snap: &Snapshot) {
+        use logbar::Level;
         let c = theme::c();
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 0.0, c.surface);
@@ -682,65 +687,145 @@ impl PadApp {
             [rect.left_top(), rect.right_top()],
             egui::Stroke::new(1.0, c.line),
         );
-        let color_of = |line: &str| {
-            if line.starts_with('✔') {
-                c.green
-            } else if line.starts_with('✘') {
-                c.red
-            } else {
-                c.text_dim
-            }
-        };
+        if self.log_open
+            && let Some(last) = snap.log.last()
+        {
+            self.log_seen = self.log_seen.max(last.seq);
+        }
+        let unseen_errors = snap
+            .log
+            .iter()
+            .filter(|e| e.seq > self.log_seen && e.level == Level::Error)
+            .count();
+        let now = Instant::now();
+
+        let header = Rect::from_min_size(rect.min, vec2(rect.width(), LOG_CLOSED_H));
         ui.scope_builder(
-            egui::UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 4.0))),
+            egui::UiBuilder::new()
+                .max_rect(header.shrink2(vec2(10.0, 4.0)))
+                .layout(Layout::left_to_right(Align::Center)),
             |ui| {
-                ui.set_clip_rect(rect);
-                ui.horizontal(|ui| {
-                    let arrow = if self.log_open {
-                        "日志 ▾"
-                    } else {
-                        "日志 ▴"
-                    };
-                    if widgets::link(ui, arrow).clicked() {
-                        self.log_open = !self.log_open;
-                    }
-                    if let Some(task) = snap.tasks.first() {
-                        ui.label(
-                            RichText::new(format!("● {task}…"))
-                                .font(theme::ui(11.5))
-                                .color(c.amber),
-                        );
-                    }
-                    if !self.log_open
-                        && let Some(last) = snap.log.last()
+                ui.set_clip_rect(header);
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if self.log_toggle(ui).clicked() {
+                    self.log_open = !self.log_open;
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 14.0;
+                    if self.log_open {
+                        if widgets::link(ui, "打开日志文件").clicked()
+                            && let Err(e) =
+                                open_in_text_editor(&bundle::default_base().join("droidrescue.log"))
+                        {
+                            log(&self.shared, format!("✘ 打开日志文件失败: {e}"));
+                        }
+                        if widgets::link(ui, "清空").clicked() {
+                            self.shared.lock().unwrap().log.clear();
+                        }
+                        if widgets::link(ui, "复制").clicked() {
+                            let text: Vec<String> = snap.log.iter().map(|e| e.line()).collect();
+                            ui.ctx().copy_text(text.join("\n"));
+                        }
+                    } else if unseen_errors > 0 && logbar::error_badge(ui, unseen_errors).clicked()
                     {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(last)
-                                    .font(theme::ui(11.5))
-                                    .color(color_of(last)),
-                            )
-                            .truncate(),
-                        );
+                        self.log_open = true;
                     }
+                    // What is happening now, in the room that is left (the
+                    // open list already shows the latest message).
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        if self.log_open && snap.tasks.is_empty() {
+                            ui.label(
+                                RichText::new(format!("共 {} 条", snap.log.len()))
+                                    .font(theme::ui(12.0))
+                                    .color(c.text_faint),
+                            );
+                        } else {
+                            status_line(ui, snap, now);
+                        }
+                    });
                 });
-                if self.log_open {
+            },
+        );
+
+        if self.log_open {
+            let list = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
+            ui.painter_at(rect).line_segment(
+                [
+                    pos2(list.left() + 12.0, list.top()),
+                    pos2(list.right() - 12.0, list.top()),
+                ],
+                egui::Stroke::new(1.0, c.line),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(list.shrink2(vec2(12.0, 6.0))),
+                |ui| {
+                    ui.set_clip_rect(list);
                     egui::ScrollArea::vertical()
                         .id_salt("log")
                         .stick_to_bottom(true)
                         .auto_shrink(false)
                         .show(ui, |ui| {
-                            for line in &snap.log {
-                                ui.label(
-                                    RichText::new(line)
-                                        .font(theme::ui(11.5))
-                                        .color(color_of(line)),
-                                );
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            if snap.log.is_empty() {
+                                ui.label(RichText::new("暂无日志").color(c.text_faint));
+                            }
+                            for entry in &snap.log {
+                                logbar::row(ui, entry, now);
                             }
                         });
-                }
-            },
+                },
+            );
+        }
+        // Relative times and the spinner move on their own.
+        let repaint = if snap.tasks.is_empty() {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_millis(50)
+        };
+        ui.ctx().request_repaint_after(repaint);
+    }
+
+    /// "≡ 日志 ⌃": list icon, label, chevron pointing where it will go.
+    /// (Kept beside the drawer; the row pieces live in `logbar`.)
+    fn log_toggle(&self, ui: &mut egui::Ui) -> egui::Response {
+        let c = theme::c();
+        let (rect, resp) = ui.allocate_exact_size(vec2(68.0, 24.0), egui::Sense::click());
+        let resp = resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(if self.log_open {
+                "收起日志"
+            } else {
+                "展开日志"
+            });
+        let p = ui.painter();
+        let hovered = resp.hovered();
+        if hovered || self.log_open {
+            p.rect_filled(rect, 6.0, c.surface_hover);
+        }
+        let fg = if hovered || self.log_open {
+            c.text
+        } else {
+            c.text_dim
+        };
+        let stroke = egui::Stroke::new(1.4, fg);
+        let x = rect.left() + 9.0;
+        for dy in [-4.0, 0.0, 4.0] {
+            let y = rect.center().y + dy;
+            p.line_segment([pos2(x, y), pos2(x + 9.0, y)], stroke);
+        }
+        p.text(
+            pos2(x + 15.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            "日志",
+            theme::ui(12.5),
+            fg,
         );
+        let cx = rect.right() - 10.0;
+        let cy = rect.center().y;
+        let dy = if self.log_open { 1.8 } else { -1.8 };
+        p.line_segment([pos2(cx - 3.5, cy - dy), pos2(cx, cy + dy)], stroke);
+        p.line_segment([pos2(cx, cy + dy), pos2(cx + 3.5, cy - dy)], stroke);
+        resp
     }
 
     /// The rescue profile in effect: the user's pick, else by the model last
@@ -1321,6 +1406,60 @@ impl PadApp {
                 .map_or(800.0, |r| r.height());
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(vec2(width, height)));
         }
+    }
+}
+
+/// The status bar's "now": the running task with a spinner, else the
+/// latest message (level icon, text, how long ago), else 就绪. Fills the
+/// room it is given; the full text is the tooltip.
+fn status_line(ui: &mut egui::Ui, snap: &Snapshot, now: Instant) {
+    let c = theme::c();
+    let (rect, resp) =
+        ui.allocate_exact_size(vec2(ui.available_width(), 24.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    let icon_at = pos2(rect.left() + 7.0, rect.center().y);
+    let (text, color, tail, tip) = if let Some(task) = snap.tasks.first() {
+        let time = ui.input(|i| i.time);
+        logbar::paint_spinner(&p, icon_at, 13.0, time, c.amber);
+        (format!("{task}…"), c.amber, String::new(), None)
+    } else if let Some(last) = snap.log.last() {
+        logbar::paint_level(&p, last.level, icon_at, 12.0);
+        let color = match last.level {
+            logbar::Level::Error => c.red,
+            logbar::Level::Info => c.text_dim,
+            _ => c.text,
+        };
+        let ago = logbar::ago(now.saturating_duration_since(last.at));
+        (last.text.clone(), color, ago, Some(last.text.clone()))
+    } else {
+        logbar::paint_level(&p, logbar::Level::Info, icon_at, 12.0);
+        ("就绪".to_string(), c.text_faint, String::new(), None)
+    };
+    let tail = (!tail.is_empty()).then(|| p.layout_no_wrap(tail, theme::ui(11.0), c.text_faint));
+    let tail_w = tail.as_ref().map_or(0.0, |g| g.size().x + 12.0);
+    let text_left = rect.left() + 20.0;
+    let mut job = egui::text::LayoutJob::single_section(
+        text,
+        egui::TextFormat::simple(theme::ui(12.0), color),
+    );
+    job.wrap =
+        egui::text::TextWrapping::truncate_at_width((rect.right() - text_left - tail_w).max(0.0));
+    let galley = p.layout_job(job);
+    let text_right = text_left + galley.size().x;
+    p.galley(
+        pos2(text_left, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    if let Some(tail) = tail {
+        p.galley(
+            pos2(text_right + 12.0, rect.center().y - tail.size().y / 2.0),
+            tail,
+            c.text_faint,
+        );
+    }
+    if let Some(tip) = tip {
+        resp.on_hover_text(tip);
     }
 }
 

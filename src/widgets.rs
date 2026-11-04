@@ -1,6 +1,7 @@
 //! Custom-painted widgets for the instrument-rail look. Colours come from
 //! the active palette (`theme::c()`), so every widget follows light / dark.
 
+use crate::icons::{self, KeyIcon};
 use crate::theme;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2,
@@ -95,8 +96,21 @@ pub fn primary(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     })
 }
 
-/// Hardware-style key: glyph on top, small caption below.
-pub fn key(ui: &mut Ui, glyph: &str, label: &str, size: Vec2, enabled: bool) -> Response {
+/// Hardware-style key: icon over a caption (tall keys) or icon beside it
+/// (short keys next to a text field).
+pub fn key(ui: &mut Ui, icon: KeyIcon, label: &str, size: Vec2, enabled: bool) -> Response {
+    key_with_hint(ui, icon, label, None, size, enabled)
+}
+
+/// [`key`] with its keyboard shortcut ("F5") shown in the top-right corner.
+pub fn key_with_hint(
+    ui: &mut Ui,
+    icon: KeyIcon,
+    label: &str,
+    hint: Option<&str>,
+    size: Vec2,
+    enabled: bool,
+) -> Response {
     let c = theme::c();
     let sense = if enabled {
         Sense::click()
@@ -114,23 +128,49 @@ pub fn key(ui: &mut Ui, glyph: &str, label: &str, size: Vec2, enabled: bool) -> 
     };
     p.rect_filled(rect, R, fill);
     p.rect_stroke(rect, R, Stroke::new(1.0, stroke), StrokeKind::Inside);
-    // Glyph over caption, centred together by their real heights (fonts
-    // differ per platform, fixed offsets overlapped).
     let label_color = if enabled { c.text_dim } else { c.text_faint };
-    // A lone symbol (◁ ○ ▢) has a small ink box: set it larger than words.
-    let glyph_size = if glyph.chars().count() == 1 {
-        20.0
+    if size.y >= 40.0 {
+        // Icon over caption, centred together by the caption's real height.
+        let icon_size = 18.0;
+        let label = p.layout_no_wrap(label.to_string(), theme::ui(11.5), label_color);
+        let gap = 4.0;
+        let top = rect.center().y - (icon_size + gap + label.size().y) / 2.0;
+        icons::draw_key(
+            p,
+            icon,
+            pos2(rect.center().x, top + icon_size / 2.0),
+            icon_size,
+            fg,
+        );
+        let label_pos = pos2(
+            rect.center().x - label.size().x / 2.0,
+            top + icon_size + gap,
+        );
+        p.galley(label_pos, label, label_color);
     } else {
-        15.0
-    };
-    let glyph = p.layout_no_wrap(glyph.to_string(), theme::mono(glyph_size), fg);
-    let label = p.layout_no_wrap(label.to_string(), theme::ui(11.0), label_color);
-    let gap = -1.0; // line boxes carry their own leading
-    let top = rect.center().y - (glyph.size().y + gap + label.size().y) / 2.0;
-    let centred = |w: f32| rect.center().x - w / 2.0;
-    let label_y = top + glyph.size().y + gap;
-    p.galley(pos2(centred(glyph.size().x), top), glyph, fg);
-    p.galley(pos2(centred(label.size().x), label_y), label, label_color);
+        // Icon beside the label.
+        let icon_size = 14.0;
+        let label = p.layout_no_wrap(label.to_string(), theme::ui(12.5), fg);
+        let gap = 6.0;
+        let left = rect.center().x - (icon_size + gap + label.size().x) / 2.0;
+        icons::draw_key(
+            p,
+            icon,
+            pos2(left + icon_size / 2.0, rect.center().y),
+            icon_size,
+            fg,
+        );
+        let label_pos = pos2(
+            left + icon_size + gap,
+            rect.center().y - label.size().y / 2.0,
+        );
+        p.galley(label_pos, label, fg);
+    }
+    if let Some(hint) = hint {
+        let hint = p.layout_no_wrap(hint.to_string(), theme::mono(9.5), c.text_faint);
+        let pos = pos2(rect.right() - hint.size().x - 6.0, rect.top() + 4.0);
+        p.galley(pos, hint, c.text_faint);
+    }
     resp
 }
 

@@ -2,7 +2,7 @@
 //! with USB debugging off, on the lock screen, with no screen.
 
 use super::{card, page_header};
-use crate::icons::Glyph;
+use crate::icons::{Glyph, KeyIcon};
 use crate::nav::Page;
 use crate::{
     PadApp, Snapshot, aoa, checkup, log, open_in_text_editor, profiles, rescue, theme, usbhost,
@@ -104,10 +104,10 @@ impl PadApp {
             .map_or(rescue::SCRIPT_UNLOCK.to_string(), |p| p.unlock.clone());
         let w2 = (ui.available_width() - gap) / 2.0;
         ui.horizontal(|ui| {
-            if widgets::key(ui, "WAKE", "唤醒", vec2(w2, 44.0), !status.busy).clicked() {
+            if widgets::key(ui, KeyIcon::Wake, "唤醒", vec2(w2, 50.0), !status.busy).clicked() {
                 self.rescue_script("唤醒", rescue::SCRIPT_WAKE, &[]);
             }
-            if widgets::key(ui, "UNLOCK", "解锁", vec2(w2, 44.0), !status.busy).clicked() {
+            if widgets::key(ui, KeyIcon::Unlock, "解锁", vec2(w2, 50.0), !status.busy).clicked() {
                 match self.rescue_password(snap, status.serial.as_deref()) {
                     Some(pw) => self.rescue_script("解锁", &unlock, &[("pw", &pw)]),
                     None => log(
@@ -126,24 +126,24 @@ impl PadApp {
         use rescue::Step;
         let gap = ui.spacing().item_spacing.x;
         let w4 = (ui.available_width() - gap * 3.0) / 4.0;
-        let nav: [[(&str, &str, Step); 4]; 2] = [
+        let nav: [[(KeyIcon, &str, Step); 4]; 2] = [
             [
-                ("↑", "上", Step::Key(0, aoa::KEY_UP)),
-                ("↓", "下", Step::Key(0, aoa::KEY_DOWN)),
-                ("←", "左", Step::Key(0, aoa::KEY_LEFT)),
-                ("→", "右", Step::Key(0, aoa::KEY_RIGHT)),
+                (KeyIcon::Up, "上", Step::Key(0, aoa::KEY_UP)),
+                (KeyIcon::Down, "下", Step::Key(0, aoa::KEY_DOWN)),
+                (KeyIcon::Left, "左", Step::Key(0, aoa::KEY_LEFT)),
+                (KeyIcon::Right, "右", Step::Key(0, aoa::KEY_RIGHT)),
             ],
             [
-                ("TAB", "焦点", Step::Key(0, aoa::KEY_TAB)),
-                ("ENTER", "确认", Step::Key(0, aoa::KEY_ENTER)),
-                ("BACK", "返回", Step::Consumer(aoa::USAGE_AC_BACK)),
-                ("HOME", "主页", Step::Consumer(aoa::USAGE_AC_HOME)),
+                (KeyIcon::Tab, "Tab 焦点", Step::Key(0, aoa::KEY_TAB)),
+                (KeyIcon::Enter, "回车确认", Step::Key(0, aoa::KEY_ENTER)),
+                (KeyIcon::Back, "返回", Step::Consumer(aoa::USAGE_AC_BACK)),
+                (KeyIcon::Home, "主页", Step::Consumer(aoa::USAGE_AC_HOME)),
             ],
         ];
         for row in nav {
             ui.horizontal(|ui| {
-                for (glyph, label, step) in row {
-                    if widgets::key(ui, glyph, label, vec2(w4, 40.0), !status.busy).clicked() {
+                for (icon, label, step) in row {
+                    if widgets::key(ui, icon, label, vec2(w4, 50.0), !status.busy).clicked() {
                         self.rescue.run("按键", vec![step]);
                     }
                 }
@@ -159,7 +159,7 @@ impl PadApp {
             let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if (widgets::key(
                 ui,
-                "SEND",
+                KeyIcon::Send,
                 "发送",
                 vec2(72.0, 34.0),
                 !self.rescue_text.is_empty(),
