@@ -29,6 +29,16 @@ pub enum Step {
     Swipe(i32, i32),
     /// Absolute pen tap; coordinates in 1/10000 of the screen as displayed.
     Tap(u16, u16),
+    /// Pen hovers (in range, not touching) — shows where a tap would land,
+    /// with 开发者选项 → 指针位置 on. For aiming taps while writing scripts.
+    Hover(u16, u16),
+    /// Pen down at `from`, moves to `to` over `ms`, up. Same points = long
+    /// press.
+    Drag {
+        from: (u16, u16),
+        to: (u16, u16),
+        ms: u32,
+    },
     /// Android display rotation 0..3 for later taps (default 1: landscape).
     Rotation(u8),
     /// Sleep while keeping the screen awake.
@@ -46,6 +56,8 @@ pub enum Step {
 //   meta+i | ctrl+a | shift+tab           (modifier + key or letter)
 //   a..z 0..9                             (single key)
 //   click:<x>,<y>  (pen tap, screen fractions)   rot:<0-3>
+//   move:<x>,<y>   (pen hovers there without touching — aim a click)
+//   drag:<x1>,<y1>,<x2>,<y2>[,<ms>]  (press, move, release; same point = long press)
 //   text:<chars>   swipe:<dx>,<dy>   wait:<ms>   pause   reconnect:<ms>
 // `{name}` is substituted from the variables passed to `parse`.
 
@@ -136,6 +148,15 @@ fn parse_command(cmd: &str) -> Result<Step, String> {
             return Ok(Step::Tap(x, y));
         }
     }
+    for prefix in ["move:", "hover:"] {
+        if let Some(xy) = cmd.strip_prefix(prefix) {
+            let (x, y) = fraction_pair(xy, cmd)?;
+            return Ok(Step::Hover(x, y));
+        }
+    }
+    if let Some(args) = cmd.strip_prefix("drag:") {
+        return parse_drag(args, cmd);
+    }
     if let Some(xy) = cmd.strip_prefix("swipe:") {
         let (x, y) = xy
             .split_once(',')
@@ -165,6 +186,31 @@ fn parse_command(cmd: &str) -> Result<Step, String> {
         Some(other) if mods == 0 => Ok(other),
         _ => Err(format!("未知按键: {cmd}")),
     }
+}
+
+/// Drag duration when the script gives none.
+const DRAG_DEFAULT_MS: u32 = 300;
+/// Longest drag / long press a script may ask for.
+const DRAG_MAX_MS: u32 = 10_000;
+
+/// "x1,y1,x2,y2[,ms]".
+fn parse_drag(args: &str, cmd: &str) -> Result<Step, String> {
+    let parts: Vec<&str> = args.split(',').collect();
+    let usage = || format!("drag 需要 x1,y1,x2,y2[,毫秒]（坐标为 0~1 的比例）: {cmd}");
+    let (points, ms) = match parts.as_slice() {
+        [a, b, c, d] => ([*a, *b, *c, *d], DRAG_DEFAULT_MS),
+        [a, b, c, d, ms] => (
+            [*a, *b, *c, *d],
+            match ms.trim().parse::<u32>() {
+                Ok(v) if (1..=DRAG_MAX_MS).contains(&v) => v,
+                _ => return Err(format!("drag 时长需在 1~{DRAG_MAX_MS} 毫秒: {cmd}")),
+            },
+        ),
+        _ => return Err(usage()),
+    };
+    let from = fraction_pair(&format!("{},{}", points[0], points[1]), cmd)?;
+    let to = fraction_pair(&format!("{},{}", points[2], points[3]), cmd)?;
+    Ok(Step::Drag { from, to, ms })
 }
 
 /// "0.41,0.61" → (4100, 6100) in 1/10000 of the screen.
@@ -504,6 +550,11 @@ fn only_waits_after(steps: &[Step], index: usize) -> bool {
         .all(|s| matches!(s, Step::Wait(_)))
 }
 
+/// 1/10000 of the screen → fraction.
+fn frac(v: u16) -> f32 {
+    f32::from(v) / 10_000.0
+}
+
 /// Err((step index, error)).
 fn run_steps(
     aoa: &Aoa,
@@ -519,10 +570,13 @@ fn run_steps(
             Step::Text(t) => *skipped += aoa.type_text(t).map_err(at)?,
             Step::Consumer(u) => aoa.consumer(*u).map_err(at)?,
             Step::Swipe(dx, dy) => aoa.mouse_drag(*dx, *dy).map_err(at)?,
-            Step::Tap(x, y) => aoa
-                .tap(
-                    f32::from(*x) / 10_000.0,
-                    f32::from(*y) / 10_000.0,
+            Step::Tap(x, y) => aoa.tap(frac(*x), frac(*y), *rotation).map_err(at)?,
+            Step::Hover(x, y) => aoa.hover(frac(*x), frac(*y), *rotation).map_err(at)?,
+            Step::Drag { from, to, ms } => aoa
+                .drag(
+                    (frac(from.0), frac(from.1)),
+                    (frac(to.0), frac(to.1)),
+                    Duration::from_millis(u64::from(*ms)),
                     *rotation,
                 )
                 .map_err(at)?,
@@ -633,6 +687,43 @@ mod tests {
         assert!(parse("click:1.5,0.2", &[]).is_err());
         assert!(parse("click:0.5", &[]).is_err());
         assert!(parse("rot:4", &[]).is_err());
+    }
+
+    #[test]
+    fn parses_pen_hover_for_aiming_taps() {
+        assert_eq!(p("move:0.5,0.25"), vec![Step::Hover(5000, 2500)]);
+        assert_eq!(p("hover:0,1"), vec![Step::Hover(0, 10_000)]);
+        assert!(parse("move:0.5", &[]).is_err());
+        assert!(parse("move:1.2,0.5", &[]).is_err());
+    }
+
+    #[test]
+    fn parses_pen_drags_with_optional_duration() {
+        assert_eq!(
+            p("drag:0.1,0.9,0.1,0.2"),
+            vec![Step::Drag {
+                from: (1000, 9000),
+                to: (1000, 2000),
+                ms: DRAG_DEFAULT_MS
+            }]
+        );
+        assert_eq!(
+            p("drag:0.5,0.5,0.5,0.5,800"),
+            vec![Step::Drag {
+                from: (5000, 5000),
+                to: (5000, 5000),
+                ms: 800
+            }],
+            "same start and end = long press"
+        );
+        for bad in [
+            "drag:0.1,0.2,0.3",
+            "drag:0.1,0.2,0.3,1.5",
+            "drag:0.1,0.2,0.3,0.4,0",
+            "drag:0.1,0.2,0.3,0.4,99999",
+        ] {
+            assert!(parse(bad, &[]).is_err(), "{bad}");
+        }
     }
 
     #[test]

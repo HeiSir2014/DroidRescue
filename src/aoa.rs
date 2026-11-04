@@ -96,6 +96,21 @@ pub fn touch_report(down: bool, x: f32, y: f32) -> [u8; 5] {
     [if down { 0b11 } else { 0b10 }, x[0], x[1], y[0], y[1]]
 }
 
+/// Interval between pen reports while dragging (~120 Hz, like a real pen).
+const PEN_STEP: Duration = Duration::from_millis(8);
+
+/// Points after `from` on the straight line to `to`, `steps` of them, the
+/// last exactly `to` (at least one).
+pub fn pen_path(from: (f32, f32), to: (f32, f32), steps: usize) -> Vec<(f32, f32)> {
+    let steps = steps.max(1);
+    (1..=steps)
+        .map(|i| {
+            let t = i as f32 / steps as f32;
+            (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+        })
+        .collect()
+}
+
 /// Consumer "Menu Pick" → Linux KEY_SELECT → Android KEYCODE_DPAD_CENTER.
 pub const USAGE_MENU_PICK: u16 = 0x41;
 pub const USAGE_AC_HOME: u16 = 0x223;
@@ -292,6 +307,43 @@ impl Aoa {
         self.send(HID_TOUCH, &[0, 0, 0, 0, 0]) // leave range
     }
 
+    /// Pen hovering at a screen fraction (in range, tip up) and staying
+    /// there: with 开发者选项 → 指针位置 the device shows where a tap at
+    /// this point would land. The next tap / drag / release ends it.
+    pub fn hover(&self, fx: f32, fy: f32, rotation: u8) -> Result<(), String> {
+        let (x, y) = raw_from_rotated(fx, fy, rotation);
+        self.send(HID_TOUCH, &touch_report(false, x, y))
+    }
+
+    /// Pen down at `from`, move to `to` over `duration`, up — absolute, so
+    /// sliders and exact swipes land where intended; `from == to` is a
+    /// long press.
+    pub fn drag(
+        &self,
+        from: (f32, f32),
+        to: (f32, f32),
+        duration: Duration,
+        rotation: u8,
+    ) -> Result<(), String> {
+        let raw = |(x, y): (f32, f32)| raw_from_rotated(x, y, rotation);
+        let pen = |down: bool, p: (f32, f32)| {
+            let (x, y) = raw(p);
+            self.send(HID_TOUCH, &touch_report(down, x, y))
+        };
+        pen(false, from)?; // hover in range first, like a real pen
+        std::thread::sleep(Duration::from_millis(20));
+        pen(true, from)?;
+        let steps = (duration.as_millis() / PEN_STEP.as_millis()).max(1) as usize;
+        let pause = duration / steps as u32;
+        for p in pen_path(from, to, steps) {
+            std::thread::sleep(pause);
+            pen(true, p)?;
+        }
+        pen(false, to)?;
+        std::thread::sleep(Duration::from_millis(20));
+        self.send(HID_TOUCH, &[0, 0, 0, 0, 0]) // leave range
+    }
+
     /// Press the left button, move by (dx, dy), release: a swipe/drag.
     pub fn mouse_drag(&self, dx: i32, dy: i32) -> Result<(), String> {
         self.send(HID_MOUSE, &mouse_report(1, 0, 0, 0))?;
@@ -372,6 +424,22 @@ mod tests {
         // Landscape (ROTATION_90): 连接办公套件 at (0.41, 0.61) → raw (0.39, 0.41).
         let (x, y) = raw_from_rotated(0.41, 0.61, 1);
         assert!((x - 0.39).abs() < 1e-6 && (y - 0.41).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pen_path_moves_evenly_and_ends_on_target() {
+        let path = pen_path((0.0, 1.0), (1.0, 0.0), 4);
+        assert_eq!(path, [(0.25, 0.75), (0.5, 0.5), (0.75, 0.25), (1.0, 0.0)]);
+        assert_eq!(
+            pen_path((0.3, 0.3), (0.3, 0.3), 2),
+            [(0.3, 0.3); 2],
+            "long press stays put"
+        );
+        assert_eq!(
+            pen_path((0.0, 0.0), (1.0, 1.0), 0),
+            [(1.0, 1.0)],
+            "at least the end"
+        );
     }
 
     #[test]

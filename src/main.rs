@@ -1496,7 +1496,7 @@ impl PadApp {
                     .margin(Margin::symmetric(8, 6)),
             );
             if widgets::key(ui, "RUN", "运行", vec2(72.0, 34.0), !self.rescue_script_text.trim().is_empty())
-                .on_hover_text("click:x,y（笔点按，屏幕比例）· rot:0~3 · wait:ms · text:abc · enter · home · back · {pw}")
+                .on_hover_text("click:x,y（笔点按，屏幕比例）· move:x,y（笔悬停不点，配合开发者选项「指针位置」对准坐标）· drag:x1,y1,x2,y2[,ms]（按住拖动；起止相同=长按）· rot:0~3 · wait:ms · text:abc · enter · home · back · {pw}")
                 .clicked()
             {
                 let script = self.rescue_script_text.clone();

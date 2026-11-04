@@ -3,6 +3,12 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 发布：把 `Cargo.toml` 的版本改好、在这里写好对应小节，然后推送 `vX.Y.Z` 标签；CI 构建两个平台、附上 SHA256SUMS，建立 **草稿** Release（说明取自本文件）。在真机上试过附件后，到 GitHub 上点「Publish」。
 
+## [Unreleased]
+
+### 新增
+- 救援脚本 `move:x,y`：触控笔悬停在该点但不点击，配合开发者选项「指针位置」对准坐标，再改成 `click`。
+- 救援脚本 `drag:x1,y1,x2,y2[,毫秒]`：按住从一点拖到另一点（滑块、精确滑动）；起止相同即长按。
+
 ## [0.2.0] - 2026-11-04
 
 改名为 **安卓救援宝 DroidRescue**（原 padctl），首个公开版本。
