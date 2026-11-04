@@ -989,7 +989,7 @@ impl PadApp {
             pos2(rect.left() + 14.0 + CAPTION_INSET, y),
             Align2::LEFT_CENTER,
             "安卓救援宝",
-            theme::strong_font(15.0),
+            theme::strong_font(16.0),
             theme::c().amber,
         );
         // The English name lives in the OS window title (taskbar, Alt-Tab):
