@@ -97,6 +97,11 @@ pub struct Workbench {
     pending: Option<PendingSwitch>,
     /// Text from the guide, applied on the next frame.
     inserted: Option<String>,
+    /// The "move does not click" hint was logged (once per session).
+    hover_hint_shown: std::cell::Cell<bool>,
+    /// The last run reached the script's end (single step on the last step,
+    /// or 运行全部): say so instead of only pointing back at step 1.
+    at_end: bool,
 }
 
 impl Default for Workbench {
@@ -110,6 +115,8 @@ impl Default for Workbench {
             new_profile: None,
             pending: None,
             inserted: None,
+            hover_hint_shown: std::cell::Cell::new(false),
+            at_end: false,
         }
     }
 }
@@ -158,6 +165,7 @@ impl Workbench {
         self.saved = self.text.clone();
         self.source = Some((profile.name.clone(), field));
         self.next_step = 0;
+        self.at_end = false;
         self.pending = None;
     }
 
@@ -197,6 +205,7 @@ impl Workbench {
         if let Some(text) = self.inserted.take() {
             self.text = text;
             self.next_step = 0;
+            self.at_end = false;
         }
 
         self.toolbar(ui, cx, &mut actions);
@@ -382,7 +391,7 @@ impl Workbench {
             })
             .unwrap_or_default();
         // What the user asked for this frame: (name, step indices, fresh).
-        let mut request: Option<(&'static str, Vec<usize>, bool)> = None;
+        let mut request: Option<(&str, Vec<usize>, bool)> = None;
         ui.horizontal(|ui| {
             let gap = ui.spacing().item_spacing.x;
             let w = ((ui.available_width() - gap * 3.0) / 4.0).min(150.0);
@@ -393,12 +402,14 @@ impl Workbench {
             };
             if key(ui, KeyIcon::Run, "运行全部", "F5", can).clicked() || (f5 && can) {
                 self.next_step = 0;
-                request = Some(("脚本", (0..count).collect(), true));
+                self.at_end = true;
+                request = Some(("运行全部", (0..count).collect(), true));
             }
             if (key(ui, KeyIcon::Step, "单步", "F10", can).clicked() || (f10 && can)) && count > 0
             {
                 let index = self.next_step.min(count - 1);
                 self.next_step = (index + 1) % count;
+                self.at_end = index + 1 == count;
                 request = Some(("单步", vec![index], index == 0));
             }
             let can_line = !line_steps.is_empty() && !busy;
@@ -412,6 +423,7 @@ impl Workbench {
                 .clicked()
                 || (ctrl_enter && can_line)
             {
+                self.at_end = false;
                 request = Some(("当前行", line_steps.clone(), false));
             }
             if key(ui, KeyIcon::Stop, "停止", "Esc", busy).clicked() || (esc && busy) {
@@ -428,6 +440,10 @@ impl Workbench {
             }
         } else {
             match parsed.as_ref().ok().and_then(|s| s.get(self.next_step)) {
+                Some(step) if self.at_end && self.next_step == 0 => format!(
+                    "✔ 已执行完全部 {count} 步 · 再按 F10 / F5 从第 {} 行重新开始",
+                    step.line
+                ),
                 Some(step) => format!(
                     "▶ 下一步：第 {} 行 · 笔方向 rot:{}",
                     step.line,
@@ -476,7 +492,21 @@ impl Workbench {
             }
         };
         match rescue::parse_located(&self.text, &[("pw", &pw)]) {
-            Ok(all) => cx.rescue.run_located(name, pick(&all, indices), fresh),
+            Ok(all) => {
+                let picked = pick(&all, indices);
+                if !self.hover_hint_shown.get()
+                    && picked
+                        .iter()
+                        .any(|l| matches!(l.step, rescue::Step::Hover(..)))
+                {
+                    self.hover_hint_shown.set(true);
+                    actions.push(Action::Log(
+                        "move 只让触控笔悬停、不点击，手机上默认看不到：在开发者选项打开「指针位置」可看到落点，对准后改成 click".into(),
+                    ));
+                }
+                let label = run_label(&self.text, name, &picked);
+                cx.rescue.run_located(label, picked, fresh)
+            }
             Err(e) => actions.push(Action::Log(format!("✘ 脚本: {e}"))),
         }
     }
@@ -534,6 +564,30 @@ impl Workbench {
 }
 
 /// The steps at `indices` (out-of-range ones skipped).
+/// What a run is called in the log, so each ✔ says what ran:
+/// "脚本 · 9 步（第 2–8 行）", "单步 · 第 8 行 move:0.5,0.88". The line
+/// is quoted from the editor text — `{pw}` as written, never the password.
+fn run_label(text: &str, name: &str, steps: &[Located]) -> String {
+    let (Some(first), Some(last)) = (steps.first(), steps.last()) else {
+        return name.to_string();
+    };
+    if first.line != last.line {
+        return format!(
+            "{name} · {} 步（第 {}–{} 行）",
+            steps.len(),
+            first.line,
+            last.line
+        );
+    }
+    let source = text.lines().nth(first.line - 1).unwrap_or("").trim();
+    let source: String = if source.chars().count() > 40 {
+        source.chars().take(39).chain(['…']).collect()
+    } else {
+        source.to_string()
+    };
+    format!("{name} · 第 {} 行 {source}", first.line)
+}
+
 fn pick(all: &[Located], indices: &[usize]) -> Vec<Located> {
     indices
         .iter()
@@ -736,6 +790,35 @@ fn check_new_profile(form: &NewProfile, existing: &[Profile]) -> Result<Profile,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reported script: 9 steps on lines 2–8.
+    const X200: &str = "# 1. 解锁\nwake; wait:500\nswipe:0,-700; wait:700\ntext:{pw}; enter; wait:2500\n# 2. 竖屏\nrot:0\n# 3. 对准\nmove:0.5,0.88";
+
+    #[test]
+    fn run_labels_say_what_ran() {
+        let all = rescue::parse_located(X200, &[("pw", "2580")]).unwrap();
+        assert_eq!(all.len(), 9);
+        assert_eq!(
+            run_label(X200, "运行全部", &all),
+            "运行全部 · 9 步（第 2–8 行）"
+        );
+        assert_eq!(
+            run_label(X200, "单步", &pick(&all, &[8])),
+            "单步 · 第 8 行 move:0.5,0.88"
+        );
+        assert_eq!(
+            run_label(X200, "当前行", &pick(&all, &[4, 5, 6])),
+            "当前行 · 第 4 行 text:{pw}; enter; wait:2500"
+        );
+    }
+
+    #[test]
+    fn run_labels_never_contain_the_password() {
+        let all = rescue::parse_located(X200, &[("pw", "2580")]).unwrap();
+        for i in 0..all.len() {
+            assert!(!run_label(X200, "单步", &pick(&all, &[i])).contains("2580"));
+        }
+    }
 
     #[test]
     fn markers_show_next_step_when_idle_and_running_line_when_busy() {

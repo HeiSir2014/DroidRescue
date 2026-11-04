@@ -445,7 +445,8 @@ pub struct Status {
 
 /// One queued run.
 struct Run {
-    name: &'static str,
+    /// Shown in the log: "✔ 救援/<name>".
+    name: String,
     steps: Vec<Step>,
     /// Source line per step (empty when not run from the editor).
     lines: Vec<usize>,
@@ -515,9 +516,9 @@ impl Rescue {
         *self.targets.lock().unwrap() = targets;
     }
 
-    pub fn run(&self, name: &'static str, steps: Vec<Step>) {
+    pub fn run(&self, name: &str, steps: Vec<Step>) {
         let _ = self.tx.send(Cmd::Run(Run {
-            name,
+            name: name.to_string(),
             steps,
             lines: Vec::new(),
             fresh: true,
@@ -528,7 +529,7 @@ impl Rescue {
     /// Run steps from the script editor: the status reports the executing
     /// line; `fresh` = a whole script (default rotation), else continue
     /// where the previous single step left the pen rotation.
-    pub fn run_located(&self, name: &'static str, steps: Vec<Located>, fresh: bool) {
+    pub fn run_located(&self, name: String, steps: Vec<Located>, fresh: bool) {
         let (steps, lines) = steps.into_iter().map(|l| (l.step, l.line)).unzip();
         let _ = self.tx.send(Cmd::Run(Run {
             name,
@@ -549,7 +550,7 @@ impl Rescue {
     /// Parse and queue a workflow script (see the script syntax above).
     pub fn run_script(
         &self,
-        name: &'static str,
+        name: &str,
         script: &str,
         vars: &[(&str, &str)],
     ) -> Result<(), String> {
