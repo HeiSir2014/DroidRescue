@@ -182,50 +182,74 @@ fn install_fonts(ctx: &egui::Context) {
             .font_data
             .insert(name.into(), Arc::new(FontData::from_static(bytes)));
     };
+    // Maple Mono, subset to Latin + symbols (no CJK): code, numbers, ids.
+    // Its CJK glyphs fill only ~73% of a 1.2 em cell, so Chinese set in it
+    // looked letter-spaced; Chinese always comes from the system UI font.
     add(
         &mut fonts,
         "maple",
-        include_bytes!("../assets/fonts/MapleMonoCN-Regular.ttf"),
+        include_bytes!("../assets/fonts/MapleMono-Regular-Latin.ttf"),
     );
     add(
         &mut fonts,
         "maple-sb",
-        include_bytes!("../assets/fonts/MapleMonoCN-SemiBold.ttf"),
+        include_bytes!("../assets/fonts/MapleMono-SemiBold-Latin.ttf"),
     );
-
-    // Rare CJK outside the GB2312 subset falls back to the system font.
-    let system_cjk = [
-        r"C:\Windows\Fonts\msyh.ttc",
-        r"C:\Windows\Fonts\simhei.ttf",
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-    ]
-    .iter()
-    .find_map(|p| std::fs::read(p).ok());
-    if let Some(bytes) = system_cjk {
-        fonts
-            .font_data
-            .insert("system-cjk".into(), Arc::new(FontData::from_owned(bytes)));
+    for (name, candidates) in [("ui", SYSTEM_UI), ("ui-bold", SYSTEM_UI_BOLD)] {
+        if let Some(data) = load_system_font(candidates) {
+            fonts.font_data.insert(name.into(), Arc::new(data));
+        }
     }
 
-    // Chain: primary → Maple (CJK) → system CJK → egui's bundled symbol/emoji fonts.
+    // Interface text: system UI font (native CJK + Latin), Maple only as a
+    // fallback; code: Maple for Latin, system font for any CJK; then egui's
+    // bundled symbol / emoji fonts.
     let egui_fallbacks = fonts
         .families
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    for (family, first) in [
-        (FontFamily::Proportional, "maple"),
-        (FontFamily::Monospace, "maple"),
-        (FontFamily::Name("strong".into()), "maple-sb"),
+    for (family, chain) in [
+        (FontFamily::Proportional, ["ui", "maple"]),
+        (FontFamily::Name("strong".into()), ["ui-bold", "maple-sb"]),
+        (FontFamily::Monospace, ["maple", "ui"]),
     ] {
-        let mut chain: Vec<String> = vec![first.into(), "maple".into(), "system-cjk".into()];
+        let mut chain: Vec<String> = chain.iter().map(|s| s.to_string()).collect();
+        chain.extend(["ui".into(), "maple".into()]);
         chain.extend(egui_fallbacks.iter().cloned());
-        chain.dedup();
-        chain.retain(|name| fonts.font_data.contains_key(name));
+        let mut seen = std::collections::HashSet::new();
+        chain.retain(|name| fonts.font_data.contains_key(name) && seen.insert(name.clone()));
         fonts.families.insert(family, chain);
     }
     ctx.set_fonts(fonts);
+}
+
+/// (path, face index in a collection): the first one present is used.
+type FontCandidates = &'static [(&'static str, u32)];
+
+/// Native Chinese UI fonts: Microsoft YaHei UI (Windows), Hiragino Sans GB
+/// W3 (macOS; PingFang ships only as a variable font there).
+const SYSTEM_UI: FontCandidates = &[
+    (r"C:\Windows\Fonts\msyh.ttc", 1),
+    (r"C:\Windows\Fonts\simhei.ttf", 0),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+    ("/System/Library/Fonts/STHeiti Light.ttc", 0),
+];
+
+const SYSTEM_UI_BOLD: FontCandidates = &[
+    (r"C:\Windows\Fonts\msyhbd.ttc", 1),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 2),
+    ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
+];
+
+fn load_system_font(candidates: FontCandidates) -> Option<FontData> {
+    candidates.iter().find_map(|&(path, index)| {
+        let bytes = std::fs::read(path).ok()?;
+        Some(FontData {
+            index,
+            ..FontData::from_owned(bytes)
+        })
+    })
 }
 
 #[cfg(test)]
