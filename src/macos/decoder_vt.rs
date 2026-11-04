@@ -54,6 +54,7 @@ unsafe extern "C" {
     static kCFTypeDictionaryValueCallBacks: DictCallbacks;
     fn CFRetain(cf: CfRef) -> CfRef;
     fn CFRelease(cf: CfRef);
+    fn CFNumberCreate(allocator: CfRef, kind: isize, value: *const c_void) -> CfRef;
     fn CFDictionaryCreate(
         allocator: CfRef,
         keys: *const CfRef,
@@ -82,18 +83,28 @@ unsafe fn cf_dictionary(pairs: &[(CfRef, CfRef)]) -> CfRef {
     }
 }
 
-/// Destination attributes for zero-copy: IOSurface-backed and usable as
-/// Metal textures. Caller releases the dictionary.
+/// Destination attributes for zero-copy: plain NV12 (`'420v'` — left to
+/// itself, VideoToolbox picks a compressed layout Metal cannot sample as
+/// planes), IOSurface-backed, usable as Metal textures. Caller releases.
 fn metal_image_attributes() -> CfRef {
-    // SAFETY: CoreVideo / CoreFoundation constants; the empty dictionary is
-    // retained by the outer one and released here.
+    const CF_NUMBER_SINT32: isize = 3;
+    // SAFETY: CoreVideo / CoreFoundation constants; the inner objects are
+    // retained by the outer dictionary and released here.
     unsafe {
+        let format = NV12_VIDEO as i32;
+        let format = CFNumberCreate(
+            std::ptr::null_mut(),
+            CF_NUMBER_SINT32,
+            (&raw const format).cast(),
+        );
         let iosurface_props = cf_dictionary(&[]);
         let attrs = cf_dictionary(&[
+            (kCVPixelBufferPixelFormatTypeKey, format),
             (kCVPixelBufferMetalCompatibilityKey, kCFBooleanTrue),
             (kCVPixelBufferIOSurfacePropertiesKey, iosurface_props),
         ]);
         CFRelease(iosurface_props);
+        CFRelease(format);
         attrs
     }
 }
@@ -171,6 +182,7 @@ unsafe extern "C" {
 
 #[link(name = "CoreVideo", kind = "framework")]
 unsafe extern "C" {
+    static kCVPixelBufferPixelFormatTypeKey: CfRef;
     static kCVPixelBufferMetalCompatibilityKey: CfRef;
     static kCVPixelBufferIOSurfacePropertiesKey: CfRef;
     fn CVPixelBufferLockBaseAddress(buffer: CfRef, flags: u64) -> i32;

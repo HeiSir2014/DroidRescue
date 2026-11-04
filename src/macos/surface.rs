@@ -209,10 +209,9 @@ mod tests {
     use crate::decoder::Picture;
 
     fn metal_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
-            ..Default::default()
-        });
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = wgpu::Backends::METAL;
+        let instance = wgpu::Instance::new(desc);
         let adapter = pollster_block_on(instance.request_adapter(&Default::default()))
             .expect("a Metal adapter");
         pollster_block_on(adapter.request_device(&Default::default())).expect("device")

@@ -227,7 +227,12 @@ release v0.2.0 contains win 7z/zip + mac dmg + SHA256SUMS.
 wgpu's Metal hal, like the D3D12 path on Windows; CPU read-back stays as
 fallback.
 **Tests**: decode fixture → imported texture; HUD shows decoder path.
-**Status**: Not Started
+**Done**: VT asks for Metal-compatible '420v' IOSurfaces; `macos/surface.rs`
+aliases both planes via CVMetalTextureCache → `texture_from_raw` →
+`create_texture_from_hal`; the shared NV12 shader samples them; the last 3
+frames stay alive while in flight. Test: imported planes read back
+byte-identical to the CPU path's planes.
+**Status**: Complete (device check with a phone pending)
 
 ## Stage 5b: Window/rail stability
 **Goal**: start/stop mirroring resizes in one SetWindowPos keeping the rail's
