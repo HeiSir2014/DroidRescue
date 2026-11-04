@@ -265,11 +265,16 @@ impl Workbench {
         let pad_action = ui
             .horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                ui.allocate_ui(vec2(editor_w, editor_h), |ui| {
+                // Each column lays out top-down in exactly its own width
+                // (a child of a horizontal row would inherit "horizontal").
+                let column = egui::Layout::top_down(egui::Align::Min);
+                ui.allocate_ui_with_layout(vec2(editor_w, editor_h), column, |ui| {
+                    ui.set_width(editor_w);
                     self.editor(ui, editor_h, error_line, next, running);
                 });
                 if with_pad {
-                    ui.allocate_ui(vec2(pad_w, editor_h), |ui| {
+                    ui.allocate_ui_with_layout(vec2(pad_w, editor_h), column, |ui| {
+                        ui.set_width(pad_w);
                         ui.set_min_height(editor_h);
                         let name = self.source.as_ref().map_or("", |(n, _)| n.as_str());
                         let pcx = pad::PadContext {
