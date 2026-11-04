@@ -207,6 +207,250 @@ pub fn draw(p: &Painter, glyph: Glyph, at: Pos2, size: f32, color: Color32) {
     }
 }
 
+/// What a key button does, as an icon (monochrome: drawn in the key's
+/// state colour, like the keys of a remote).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyIcon {
+    Back,
+    Home,
+    Recents,
+    Power,
+    VolDown,
+    VolUp,
+    Wake,
+    Unlock,
+    Up,
+    Down,
+    Left,
+    Right,
+    Tab,
+    Enter,
+    Send,
+    Stop,
+    Notifications,
+    Rotate,
+    ScreenOn,
+    ScreenOff,
+    Run,
+    Step,
+    RunLine,
+    Wifi,
+    Save,
+}
+
+#[cfg(test)]
+impl KeyIcon {
+    pub const ALL: [KeyIcon; 25] = [
+        KeyIcon::Back,
+        KeyIcon::Home,
+        KeyIcon::Recents,
+        KeyIcon::Power,
+        KeyIcon::VolDown,
+        KeyIcon::VolUp,
+        KeyIcon::Wake,
+        KeyIcon::Unlock,
+        KeyIcon::Up,
+        KeyIcon::Down,
+        KeyIcon::Left,
+        KeyIcon::Right,
+        KeyIcon::Tab,
+        KeyIcon::Enter,
+        KeyIcon::Send,
+        KeyIcon::Stop,
+        KeyIcon::Notifications,
+        KeyIcon::Rotate,
+        KeyIcon::ScreenOn,
+        KeyIcon::ScreenOff,
+        KeyIcon::Run,
+        KeyIcon::Step,
+        KeyIcon::RunLine,
+        KeyIcon::Wifi,
+        KeyIcon::Save,
+    ];
+}
+
+/// A key icon, `size` px square, centred on `at` (16 px design grid).
+pub fn draw_key(p: &Painter, icon: KeyIcon, at: Pos2, size: f32, color: Color32) {
+    let s = size / 16.0;
+    let pt = |x: f32, y: f32| at + vec2((x - 8.0) * s, (y - 8.0) * s);
+    let stroke = Stroke::new(1.6 * s, color);
+    let line = |pts: &[(f32, f32)]| {
+        p.add(Shape::line(
+            pts.iter().map(|&(x, y)| pt(x, y)).collect(),
+            stroke,
+        ));
+    };
+    let fill = |pts: &[(f32, f32)]| {
+        p.add(Shape::convex_polygon(
+            pts.iter().map(|&(x, y)| pt(x, y)).collect(),
+            color,
+            Stroke::NONE,
+        ));
+    };
+    let arc_points = |cx: f32, cy: f32, r: f32, a0: f32, a1: f32| -> Vec<Pos2> {
+        (0..=20)
+            .map(|i| {
+                let a = a0 + (a1 - a0) * i as f32 / 20.0;
+                pt(cx + r * a.cos(), cy + r * a.sin())
+            })
+            .collect()
+    };
+    // Speaker body shared by the volume keys.
+    let speaker = || {
+        line(&[
+            (1.5, 6.0),
+            (4.5, 6.0),
+            (8.0, 3.0),
+            (8.0, 13.0),
+            (4.5, 10.0),
+            (1.5, 10.0),
+            (1.5, 6.0),
+        ])
+    };
+    let phone = || {
+        p.rect_stroke(
+            Rect::from_min_max(pt(4.5, 1.5), pt(11.5, 14.5)),
+            1.8 * s,
+            stroke,
+            StrokeKind::Middle,
+        );
+    };
+    match icon {
+        // Android navigation bar keys.
+        KeyIcon::Back => line(&[(11.5, 2.5), (3.5, 8.0), (11.5, 13.5), (11.5, 2.5)]),
+        KeyIcon::Home => {
+            p.circle_stroke(pt(8.0, 8.0), 5.5 * s, stroke);
+        }
+        KeyIcon::Recents => {
+            p.rect_stroke(
+                Rect::from_min_max(pt(3.0, 3.0), pt(13.0, 13.0)),
+                1.8 * s,
+                stroke,
+                StrokeKind::Middle,
+            );
+        }
+        KeyIcon::Power => {
+            // Ring open at the top, stem through the gap.
+            p.add(Shape::line(
+                arc_points(8.0, 8.8, 5.6, -PI * 0.32, PI * 1.32),
+                stroke,
+            ));
+            line(&[(8.0, 1.5), (8.0, 7.5)]);
+        }
+        KeyIcon::VolDown => {
+            speaker();
+            line(&[(10.5, 8.0), (14.5, 8.0)]);
+        }
+        KeyIcon::VolUp => {
+            speaker();
+            line(&[(10.5, 8.0), (14.5, 8.0)]);
+            line(&[(12.5, 6.0), (12.5, 10.0)]);
+        }
+        KeyIcon::Wake => {
+            // Sun: screen on.
+            p.circle_stroke(pt(8.0, 8.0), 2.8 * s, stroke);
+            for i in 0..8 {
+                let a = i as f32 * PI / 4.0;
+                let (sin, cos) = a.sin_cos();
+                line(&[
+                    (8.0 + cos * 4.8, 8.0 + sin * 4.8),
+                    (8.0 + cos * 6.6, 8.0 + sin * 6.6),
+                ]);
+            }
+        }
+        KeyIcon::Unlock => draw(p, Glyph::Unlock, at, size, color),
+        KeyIcon::Wifi => draw(p, Glyph::Wifi, at, size, color),
+        KeyIcon::Save => draw(p, Glyph::Export, at, size, color),
+        // Direction keys.
+        KeyIcon::Up => {
+            line(&[(8.0, 13.5), (8.0, 2.5)]);
+            line(&[(3.8, 6.7), (8.0, 2.5), (12.2, 6.7)]);
+        }
+        KeyIcon::Down => {
+            line(&[(8.0, 2.5), (8.0, 13.5)]);
+            line(&[(3.8, 9.3), (8.0, 13.5), (12.2, 9.3)]);
+        }
+        KeyIcon::Left => {
+            line(&[(13.5, 8.0), (2.5, 8.0)]);
+            line(&[(6.7, 3.8), (2.5, 8.0), (6.7, 12.2)]);
+        }
+        KeyIcon::Right => {
+            line(&[(2.5, 8.0), (13.5, 8.0)]);
+            line(&[(9.3, 3.8), (13.5, 8.0), (9.3, 12.2)]);
+        }
+        KeyIcon::Tab => {
+            line(&[(1.5, 8.0), (11.5, 8.0)]);
+            line(&[(8.0, 4.5), (11.5, 8.0), (8.0, 11.5)]);
+            line(&[(14.0, 3.5), (14.0, 12.5)]);
+        }
+        KeyIcon::Enter => {
+            line(&[(13.5, 2.5), (13.5, 10.0), (3.0, 10.0)]);
+            line(&[(6.5, 6.5), (3.0, 10.0), (6.5, 13.5)]);
+        }
+        KeyIcon::Send => {
+            // Paper plane.
+            line(&[
+                (1.5, 7.5),
+                (14.5, 2.0),
+                (10.0, 14.5),
+                (7.5, 9.0),
+                (1.5, 7.5),
+            ]);
+            line(&[(7.5, 9.0), (14.5, 2.0)]);
+        }
+        KeyIcon::Stop => {
+            p.rect_filled(
+                Rect::from_min_max(pt(3.5, 3.5), pt(12.5, 12.5)),
+                1.8 * s,
+                color,
+            );
+        }
+        KeyIcon::Notifications => {
+            // Bell.
+            let mut bell = vec![pt(3.5, 11.5)];
+            bell.extend(arc_points(8.0, 6.8, 4.5, PI, TAU));
+            bell.push(pt(12.5, 11.5));
+            p.add(Shape::line(bell, stroke));
+            line(&[(2.0, 11.5), (14.0, 11.5)]);
+            p.circle_filled(pt(8.0, 13.8), 1.3 * s, color);
+        }
+        KeyIcon::Rotate => {
+            // Phone outline with a turning arrow.
+            p.rect_stroke(
+                Rect::from_min_max(pt(6.0, 4.0), pt(14.5, 14.5)),
+                1.5 * s,
+                stroke,
+                StrokeKind::Middle,
+            );
+            p.add(Shape::line(
+                arc_points(6.0, 7.0, 4.5, PI, PI * 1.65),
+                stroke,
+            ));
+            line(&[(0.0, 5.0), (1.5, 7.2), (3.6, 5.6)]);
+        }
+        KeyIcon::ScreenOn => {
+            phone();
+            for (x, y) in [(8.0, 5.8), (6.2, 9.0), (9.8, 9.0)] {
+                p.circle_filled(pt(x, y), 0.9 * s, color);
+            }
+        }
+        KeyIcon::ScreenOff => {
+            phone();
+            line(&[(2.0, 2.5), (14.0, 13.5)]);
+        }
+        // Script debugger.
+        KeyIcon::Run => fill(&[(4.5, 2.5), (13.0, 8.0), (4.5, 13.5)]),
+        KeyIcon::Step => {
+            fill(&[(2.5, 3.0), (10.0, 8.0), (2.5, 13.0)]);
+            line(&[(13.0, 3.0), (13.0, 13.0)]);
+        }
+        KeyIcon::RunLine => {
+            line(&[(3.5, 2.5), (3.5, 10.0), (13.5, 10.0)]);
+            line(&[(10.0, 6.5), (13.5, 10.0), (10.0, 13.5)]);
+        }
+    }
+}
+
 /// Brand colours (assets/icon/droidrescue.svg).
 const BRAND_TILE: Color32 = Color32::from_rgb(0x1F, 0x9D, 0x5A);
 const BRAND_BAND: Color32 = Color32::from_rgb(0xF2, 0x68, 0x3C);
@@ -281,5 +525,23 @@ mod tests {
         ] {
             assert_ne!(g.hue().a(), 0, "{g:?}");
         }
+    }
+
+    #[test]
+    fn every_key_icon_and_the_brand_mark_paint_something() {
+        // One frame per icon: whatever it painted is that frame's output.
+        let paint = |f: &dyn Fn(&Painter)| {
+            let ctx = egui::Context::default();
+            ctx.run_ui(egui::RawInput::default(), |ui| f(ui.painter()))
+                .shapes
+                .len()
+        };
+        for icon in KeyIcon::ALL {
+            let shapes = paint(&|p| draw_key(p, icon, pos2(50.0, 50.0), 18.0, Color32::WHITE));
+            assert!(shapes > 0, "{icon:?} drew nothing");
+        }
+        let shapes =
+            paint(&|p| brand_mark(p, Rect::from_min_size(pos2(0.0, 0.0), vec2(64.0, 64.0))));
+        assert!(shapes > 0);
     }
 }

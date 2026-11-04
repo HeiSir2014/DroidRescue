@@ -9,6 +9,7 @@
 
 use crate::checkup;
 use crate::guide;
+use crate::icons::KeyIcon;
 use crate::profiles::{self, Profile};
 use crate::rescue::{self, Located, Rescue, ScriptError};
 use crate::theme;
@@ -385,27 +386,35 @@ impl Workbench {
         ui.horizontal(|ui| {
             let gap = ui.spacing().item_spacing.x;
             let w = ((ui.available_width() - gap * 3.0) / 4.0).min(150.0);
-            let size = vec2(w, 40.0);
+            let size = vec2(w, 46.0);
             let can = ok && !busy;
-            if widgets::key(ui, "▶ F5", "运行全部", size, can).clicked() || (f5 && can) {
+            let key = |ui: &mut egui::Ui, icon, label, hint, enabled| {
+                widgets::key_with_hint(ui, icon, label, Some(hint), size, enabled)
+            };
+            if key(ui, KeyIcon::Run, "运行全部", "F5", can).clicked() || (f5 && can) {
                 self.next_step = 0;
                 request = Some(("脚本", (0..count).collect(), true));
             }
-            if (widgets::key(ui, "⏭ F10", "单步", size, can).clicked() || (f10 && can)) && count > 0
+            if (key(ui, KeyIcon::Step, "单步", "F10", can).clicked() || (f10 && can)) && count > 0
             {
                 let index = self.next_step.min(count - 1);
                 self.next_step = (index + 1) % count;
                 request = Some(("单步", vec![index], index == 0));
             }
             let can_line = !line_steps.is_empty() && !busy;
-            if widgets::key(ui, "↳ Ctrl+Enter", "运行当前行", size, can_line)
+            let line_hint = if cfg!(target_os = "macos") {
+                "⌘Enter"
+            } else {
+                "Ctrl+Enter"
+            };
+            if key(ui, KeyIcon::RunLine, "运行当前行", line_hint, can_line)
                 .on_hover_text(format!("第 {line} 行"))
                 .clicked()
                 || (ctrl_enter && can_line)
             {
                 request = Some(("当前行", line_steps.clone(), false));
             }
-            if widgets::key(ui, "■ Esc", "停止", size, busy).clicked() || (esc && busy) {
+            if key(ui, KeyIcon::Stop, "停止", "Esc", busy).clicked() || (esc && busy) {
                 cx.rescue.stop();
             }
         });

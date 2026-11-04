@@ -1,7 +1,7 @@
 //! 工具 page: device utilities that need adb.
 
 use super::{card, page_header};
-use crate::icons::Glyph;
+use crate::icons::{Glyph, KeyIcon};
 use crate::{PadApp, Snapshot, theme, widgets};
 use eframe::egui::{self, Margin, RichText, vec2};
 
@@ -20,7 +20,7 @@ impl PadApp {
                             RichText::new("在设备上开启 5555 端口的无线调试并自动连接，之后可以拔掉数据线（需在同一局域网）。")
                                 .color(theme::c().text_dim),
                         );
-                        if widgets::key(ui, "WIFI", "开启无线 ADB", vec2(180.0, 44.0), ready)
+                        if widgets::key(ui, KeyIcon::Wifi, "开启无线 ADB", vec2(180.0, 36.0), ready)
                             .clicked()
                         {
                             self.enable_wireless();
@@ -53,7 +53,9 @@ impl PadApp {
                             .margin(Margin::symmetric(8, 6))
                             .font(theme::mono(11.0)),
                     );
-                    if widgets::key(ui, "SAVE", "开始导出", vec2(180.0, 44.0), ready).clicked() {
+                    if widgets::key(ui, KeyIcon::Save, "开始导出", vec2(180.0, 36.0), ready)
+                        .clicked()
+                    {
                         self.backup();
                     }
                 });
