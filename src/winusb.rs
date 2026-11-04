@@ -294,9 +294,20 @@ pub fn install_args(targets: &[UsbTarget]) -> String {
     format!("{INSTALL_FLAG} {}", list.join(","))
 }
 
-/// Re-launch this executable elevated to bind `targets` (UAC prompt).
+/// How long the elevated helper may take (UAC prompt + driver install).
+const HELPER_TIMEOUT_MS: u32 = 180_000;
+
+/// Re-launch this executable elevated to bind `targets` (UAC prompt) and
+/// wait for it: `Ok` only when the helper bound every target (exit code 0).
+/// Blocks — call it off the UI thread.
 pub fn install_elevated(targets: &[UsbTarget]) -> Result<(), String> {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_CANCELLED, GetLastError, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
     if targets.is_empty() {
         return Err("机型配置里没有声明救援用的 USB 接口（usb = …）".into());
@@ -307,25 +318,41 @@ pub fn install_elevated(targets: &[UsbTarget]) -> Result<(), String> {
         wide(&exe.to_string_lossy()),
         wide(&install_args(targets)),
     );
-    // SAFETY: plain ShellExecute with NUL-terminated wide strings.
-    let r = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            file.as_ptr(),
-            args.as_ptr(),
-            std::ptr::null(),
-            SW_HIDE,
-        )
-    };
-    // ShellExecute returns a value > 32 on success.
-    if (r as isize) > 32 {
-        Ok(())
-    } else {
-        Err(format!(
-            "无法以管理员身份运行（已取消？代码 {}）",
-            r as isize
-        ))
+    // SAFETY: NUL-terminated wide strings that outlive the call; the
+    // process handle is closed exactly once below.
+    unsafe {
+        let mut info: SHELLEXECUTEINFOW = std::mem::zeroed();
+        info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.lpParameters = args.as_ptr();
+        info.nShow = SW_HIDE;
+        if ShellExecuteExW(&mut info) == 0 {
+            return Err(if GetLastError() == ERROR_CANCELLED {
+                "管理员授权被取消，WinUSB 未安装".into()
+            } else {
+                last_error("以管理员身份启动安装程序")
+            });
+        }
+        if info.hProcess.is_null() {
+            return Err("无法跟踪 WinUSB 安装程序".into());
+        }
+        let waited = WaitForSingleObject(info.hProcess, HELPER_TIMEOUT_MS);
+        let mut code = 0u32;
+        let got = GetExitCodeProcess(info.hProcess, &mut code);
+        CloseHandle(info.hProcess);
+        match (waited, got, code) {
+            (WAIT_OBJECT_0, 0, _) => Err(last_error("读取 WinUSB 安装结果")),
+            (WAIT_OBJECT_0, _, 0) => Ok(()),
+            (WAIT_OBJECT_0, _, code) => Err(format!(
+                "WinUSB 安装失败（代码 {code}），详情见日志文件 {}",
+                crate::bundle::default_base()
+                    .join("droidrescue.log")
+                    .display()
+            )),
+            _ => Err("等待 WinUSB 安装超时".into()),
+        }
     }
 }
 

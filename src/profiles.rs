@@ -94,12 +94,32 @@ pub fn path() -> PathBuf {
 
 /// Built-ins merged with the user's file (missing file = built-ins only).
 pub fn load(path: &Path) -> (Vec<Profile>, Option<String>) {
-    match std::fs::read_to_string(path) {
-        Ok(text) => match parse(&text) {
+    match read_user_file(path) {
+        Ok(Some(text)) => match parse(&text) {
             Ok(user) => (merge(builtin(), user), None),
             Err(e) => (builtin(), Some(format!("{}: {e}", path.display()))),
         },
-        Err(_) => (builtin(), None),
+        Ok(None) => (builtin(), None),
+        Err(e) => (builtin(), Some(e)),
+    }
+}
+
+/// The user's profile file: Ok(None) when it does not exist; an error
+/// (never silently "empty") when it exists but cannot be read — e.g. saved
+/// as GBK by an editor. A UTF-8 byte-order mark is accepted.
+fn read_user_file(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+            String::from_utf8(bytes.to_vec()).map(Some).map_err(|_| {
+                format!(
+                    "{} 不是 UTF-8 编码（请用 UTF-8 保存，例如在记事本「另存为」里选 UTF-8）",
+                    path.display()
+                )
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("无法读取 {}: {e}", path.display())),
     }
 }
 
@@ -184,7 +204,7 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
             return Err(format!("[{}] 缺少 unlock", p.name));
         }
         for script in std::iter::once(&p.unlock).chain(p.enable.as_ref()) {
-            rescue::parse(script, &[("pw", "0")])
+            rescue::parse(script, &[("pw", rescue::PW_PLACEHOLDER)])
                 .map_err(|e| format!("[{}] 脚本错误: {e}", p.name))?;
         }
     }
@@ -282,16 +302,22 @@ pub fn replace_section(text: &str, name: &str, section: &str) -> String {
 }
 
 /// Write `profile` into the user's profile file (replacing its section,
-/// or adding it). Creates the file from the template when missing.
-pub fn save(path: &Path, profile: &Profile) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|_| template());
+/// or adding it). Starts from the template when the file does not exist;
+/// refuses — rather than overwrite the user's other profiles — when it
+/// exists but cannot be read or parsed.
+pub fn save(path: &Path, profile: &Profile) -> Result<(), String> {
+    let text = read_user_file(path)?.unwrap_or_else(template);
+    parse(&text).map_err(|e| format!("{} 有错误，先修正再保存: {e}", path.display()))?;
     let updated = replace_section(&text, &profile.name, &render(profile));
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, updated)?;
-    std::fs::rename(&tmp, path)
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, updated)?;
+        std::fs::rename(&tmp, path)
+    };
+    write().map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 
 /// The first profile that lists this adb model.
@@ -493,6 +519,54 @@ mod tests {
             parse(&replace_section("", "小米 14", &render(&sample()))).unwrap(),
             vec![sample()]
         );
+    }
+
+    fn temp_path(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "droidrescue-profiles-{tag}-{}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn a_file_with_a_utf8_bom_still_loads() {
+        let path = temp_path("bom");
+        std::fs::write(&path, "\u{feff}[X]\nunlock = wake\n").unwrap();
+        let (profiles, error) = load(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(error, None);
+        assert!(profiles.iter().any(|p| p.name == "X"));
+    }
+
+    /// The data-loss case: an unreadable file must be reported, and saving
+    /// must not replace it (and the user's other profiles) with a template.
+    #[test]
+    fn unreadable_files_are_reported_and_never_overwritten() {
+        let path = temp_path("gbk");
+        let gbk = b"[\xd0\xa1\xc3\xd7]\nunlock = wake\n".to_vec(); // "[小米]" in GBK
+        std::fs::write(&path, &gbk).unwrap();
+        let (_, error) = load(&path);
+        assert!(error.unwrap().contains("UTF-8"));
+        assert!(save(&path, &sample()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), gbk, "file untouched");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn saving_keeps_other_profiles_and_creates_missing_files() {
+        let path = temp_path("save");
+        save(&path, &sample()).unwrap();
+        let mut other = sample();
+        other.name = "Other".into();
+        save(&path, &other).unwrap();
+        let (profiles, error) = load(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(error, None);
+        for name in ["小米 14", "Other"] {
+            assert!(profiles.iter().any(|p| p.name == name), "{name} kept");
+        }
     }
 
     #[test]

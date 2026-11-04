@@ -55,6 +55,24 @@ pub fn quote_input_text(text: &str) -> String {
     format!("'{escaped}'")
 }
 
+/// `input text` commands that type `text` exactly. `input` turns `%s` into
+/// a space, so a literal `%` followed by `s` is split across two commands.
+pub fn input_text_commands(text: &str) -> Vec<String> {
+    let mut chunks: Vec<String> = vec![String::new()];
+    for ch in text.chars() {
+        let current = chunks.last_mut().expect("never empty");
+        if ch == 's' && current.ends_with('%') {
+            chunks.push(String::new());
+        }
+        chunks.last_mut().expect("never empty").push(ch);
+    }
+    chunks
+        .iter()
+        .filter(|c| !c.is_empty())
+        .map(|c| format!("input text {}", quote_input_text(c)))
+        .collect()
+}
+
 /// Extract the IPv4 address from `ip -f inet addr show wlan0`.
 pub fn parse_wlan_ip(out: &str) -> Option<String> {
     let rest = out.split("inet ").nth(1)?;
@@ -77,6 +95,13 @@ pub fn stale_scrcpy_forwards(list: &str, serial: &str) -> Vec<String> {
         })
         .collect()
 }
+
+/// Status queries of the background poller (outputs feed the parsers below).
+pub const SERIALNO_CMD: &str = "getprop ro.serialno";
+pub const REFRESH_CMD: &str = "dumpsys display | grep -oE 'fps=[0-9.]+'";
+pub const AWAKE_CMD: &str = "dumpsys power | grep mWakefulness=";
+pub const KEYGUARD_CMD: &str = "dumpsys window | grep isKeyguardShowing";
+pub const ORIENTATION_CMD: &str = "dumpsys input | grep -m1 'Viewport INTERNAL'";
 
 /// Shell command whose three output lines feed `friendly_name`.
 pub const FRIENDLY_NAME_CMD: &str =
@@ -203,6 +228,21 @@ impl Tools {
         self.adb_command(serial, args).stdin(Stdio::null()).output()
     }
 
+    /// Run adb; Ok(last output line) or Err(reason) — see [`outcome`].
+    pub fn run(&self, serial: Option<&str>, args: &[&str]) -> Result<String, String> {
+        let out = self
+            .adb(serial, args)
+            .map_err(|e| format!("无法运行 adb: {e}"))?;
+        outcome(
+            out.status.success(),
+            &format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    }
+
     /// Run `adb shell <cmd>` and return stdout (stderr appended on failure).
     pub fn shell(&self, serial: Option<&str>, cmd: &str) -> Result<String, String> {
         let out = self
@@ -218,12 +258,190 @@ impl Tools {
     }
 }
 
-/// Swipe up the keyguard on any device: vertical stroke along the short
-/// side of `wm size`, so it stays on screen in portrait and landscape
-/// (`input` coordinates follow the current rotation; `wm size` is natural).
-pub const SWIPE_UP_CMD: &str = "s=$(wm size | grep -oE '[0-9]+x[0-9]+' | tail -n 1); \
-    w=${s%x*}; h=${s#*x}; m=$(( w < h ? w : h )); \
-    input swipe $(( m / 2 )) $(( m * 8 / 10 )) $(( m / 2 )) $(( m * 2 / 10 )) 300";
+/// The result of an adb command from its exit status and output: the last
+/// non-empty line, as an error when adb failed — including the commands that
+/// exit 0 on failure (`adb connect` prints "failed to connect …", `adb pair`
+/// "Failed: …").
+pub fn outcome(success: bool, output: &str) -> Result<String, String> {
+    let last = output
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let lower = last.to_ascii_lowercase();
+    let reported_failure = ["failed", "cannot", "unable to", "error:"]
+        .iter()
+        .any(|w| lower.contains(w));
+    if success && !reported_failure {
+        Ok(last)
+    } else {
+        Err(last)
+    }
+}
+
+/// The adb-input unlock sequence (wake, swipe the keyguard, PIN, Enter),
+/// as (step name, shell command). The PIN is in the third command only.
+pub fn unlock_commands(password: &str) -> Vec<(&'static str, String)> {
+    let mut cmds = vec![
+        (WAKE_STEP, "input keyevent 224".to_string()),
+        ("打开密码框", BOUNCER_CMD.to_string()),
+    ];
+    cmds.extend(
+        input_text_commands(password)
+            .into_iter()
+            .map(|c| (PIN_STEP, c)),
+    );
+    cmds.push(("回车", "input keyevent 66".to_string()));
+    cmds
+}
+
+/// Name of the unlock step(s) that carry the PIN.
+const PIN_STEP: &str = "输入密码";
+/// Name of the unlock step that wakes the screen.
+const WAKE_STEP: &str = "唤醒";
+
+/// Unlock with adb `input`, pausing for the keyguard's animations. Errors
+/// never contain the password.
+pub fn unlock(tools: &Tools, serial: Option<&str>, password: &str) -> Result<(), String> {
+    for (name, cmd) in unlock_commands(password) {
+        tools.shell(serial, &cmd).map_err(|e| {
+            if name == PIN_STEP {
+                // The error quotes the command, i.e. the PIN: never log it.
+                format!("解锁/{name} 失败（adb 执行出错）")
+            } else {
+                format!("解锁/{name} 失败: {e}")
+            }
+        })?;
+        if name == WAKE_STEP {
+            // From deep sleep / always-on display waking takes longer than
+            // any fixed pause: a swipe sent too early is lost and the PIN
+            // lands on a dark keyguard.
+            wait_awake(tools, serial, std::time::Duration::from_secs(3));
+        }
+        let pause = if name == PIN_STEP { 150 } else { 600 };
+        std::thread::sleep(std::time::Duration::from_millis(pause));
+    }
+    Ok(())
+}
+
+/// Poll until the device reports `mWakefulness=Awake` or `timeout` passes
+/// (a device whose dumpsys says nothing is not waited on).
+fn wait_awake(tools: &Tools, serial: Option<&str>, timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        match tools
+            .shell(serial, AWAKE_CMD)
+            .ok()
+            .as_deref()
+            .and_then(parse_awake)
+        {
+            Some(false) => std::thread::sleep(std::time::Duration::from_millis(150)),
+            _ => return,
+        }
+    }
+}
+
+/// Device folders exported by 导出照片/文件.
+pub const BACKUP_DIRS: [&str; 6] = [
+    "DCIM",
+    "Pictures",
+    "Download",
+    "Documents",
+    "Movies",
+    "Music",
+];
+
+/// Copy [`BACKUP_DIRS`] from the device into `dest` (`adb pull -a`, keeps
+/// times). Folders the device does not have are skipped, not errors.
+/// Returns how many folders were copied.
+pub fn backup(
+    tools: &Tools,
+    serial: Option<&str>,
+    dest: &Path,
+    log: &dyn Fn(String),
+) -> BackupResult {
+    let mut result = BackupResult::default();
+    if let Err(e) = std::fs::create_dir_all(dest) {
+        log(format!("✘ 无法创建 {}: {e}", dest.display()));
+        result.failed += 1;
+        return result;
+    }
+    let dest_str = dest.to_string_lossy();
+    for dir in BACKUP_DIRS {
+        let src = format!("/sdcard/{dir}");
+        if tools.shell(serial, &format!("test -d {src}")).is_err() {
+            continue; // not on this device
+        }
+        log(format!("… 导出 {src}"));
+        match tools.run(serial, &["pull", "-a", &src, &dest_str]) {
+            Ok(out) => {
+                result.copied += 1;
+                log(format!("✔ 导出 {dir}: {out}"));
+            }
+            Err(e) => {
+                result.failed += 1;
+                log(format!("✘ 导出 {dir}: {e}"));
+            }
+        }
+    }
+    result
+}
+
+/// Folders copied / failed by [`backup`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BackupResult {
+    pub copied: usize,
+    pub failed: usize,
+}
+
+impl BackupResult {
+    /// One log line for the whole export, never a ✔ when nothing (or not
+    /// everything) was copied.
+    pub fn summary(&self, dest: &Path) -> String {
+        match (self.copied, self.failed) {
+            (0, 0) => "✘ 导出：设备上没有可导出的文件夹".to_string(),
+            (n, 0) => format!("✔ 导出完成（{n} 个文件夹）→ {}", dest.display()),
+            (n, f) => format!(
+                "✘ 导出完成 {n} 个，失败 {f} 个（见上方日志）→ {}",
+                dest.display()
+            ),
+        }
+    }
+}
+
+/// Turn on adb over Wi-Fi (port 5555) and connect to it; returns `ip:5555`.
+pub fn enable_wireless(tools: &Tools, serial: Option<&str>) -> Result<String, String> {
+    let out = tools
+        .shell(serial, "ip -f inet addr show wlan0")
+        .map_err(|e| format!("获取 IP 失败: {e}"))?;
+    let ip = parse_wlan_ip(&out).ok_or("设备没连 WiFi（wlan0 没有 IP）")?;
+    tools.run(serial, &["tcpip", "5555"])?;
+    let target = format!("{ip}:5555");
+    // adbd restarts in TCP mode: give it a moment, then retry a few times.
+    let mut last = String::new();
+    for _ in 0..5 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        match tools.run(None, &["connect", &target]) {
+            Ok(_) => return Ok(target),
+            Err(e) => last = e,
+        }
+    }
+    Err(format!("adb connect {target} 失败: {last}"))
+}
+
+/// Bring up the PIN bouncer. `wm dismiss-keyguard` asks the system itself
+/// and works even while the screen is still turning on (a swipe sent then
+/// is lost: reproduced on the emulator right after sleep). The fallback,
+/// where the command doesn't exist, swipes up along the short side of
+/// `wm size`, so it stays on screen in portrait and landscape (`input`
+/// coordinates follow the current rotation; `wm size` is natural).
+pub const BOUNCER_CMD: &str = concat!(
+    "wm dismiss-keyguard 2>/dev/null || { ",
+    "s=$(wm size | grep -oE '[0-9]+x[0-9]+' | tail -n 1); ",
+    "w=${s%x*}; h=${s#*x}; m=$(( w < h ? w : h )); ",
+    "input swipe $(( m / 2 )) $(( m * 8 / 10 )) $(( m / 2 )) $(( m * 2 / 10 )) 300; }"
+);
 
 /// Android's default long-press timeout (ViewConfiguration.DEFAULT_LONG_PRESS_TIMEOUT).
 pub const LONG_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
@@ -248,6 +466,62 @@ fn hidden_command(program: &Path) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adb_failures_that_exit_zero_are_errors() {
+        assert_eq!(
+            outcome(
+                true,
+                "failed to connect to '10.0.0.9:5555': Connection refused\n"
+            ),
+            Err("failed to connect to '10.0.0.9:5555': Connection refused".into())
+        );
+        assert!(outcome(true, "Failed: Wrong password or connection was dropped.").is_err());
+        assert_eq!(
+            outcome(true, "connected to 10.0.0.9:5555\n\n"),
+            Ok("connected to 10.0.0.9:5555".into())
+        );
+        assert_eq!(outcome(true, "\n"), Ok(String::new()));
+        assert!(
+            outcome(
+                false,
+                "adb: error: remote object '/sdcard/X' does not exist"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unlock_commands_keep_the_pin_in_one_quoted_command() {
+        let cmds = unlock_commands("12 34");
+        let with_pin: Vec<_> = cmds.iter().filter(|(_, c)| c.contains("12%s34")).collect();
+        assert_eq!(with_pin.len(), 1);
+        assert_eq!(with_pin[0].1, "input text '12%s34'");
+        assert_eq!(cmds[0].1, "input keyevent 224", "wake first");
+        assert_eq!(cmds.last().unwrap().1, "input keyevent 66", "enter last");
+    }
+
+    #[test]
+    fn backup_summary_only_reports_success_when_everything_copied() {
+        let dest = Path::new("/backup");
+        let r = |copied, failed| BackupResult { copied, failed }.summary(dest);
+        assert!(r(3, 0).starts_with('✔'));
+        assert!(r(0, 0).starts_with('✘'), "nothing exported");
+        assert!(r(2, 1).starts_with('✘'), "partial failure");
+        assert!(r(0, 2).starts_with('✘'));
+    }
+
+    /// `input text` reads `%s` as a space: a literal "%s" must not be.
+    #[test]
+    fn literal_percent_s_is_typed_as_typed() {
+        assert_eq!(
+            input_text_commands("ab%sc"),
+            ["input text 'ab%'", "input text 'sc'"]
+        );
+        assert_eq!(input_text_commands("a b"), ["input text 'a%sb'"]);
+        assert_eq!(input_text_commands("100%"), ["input text '100%'"]);
+        assert!(input_text_commands("").is_empty());
+    }
 
     #[test]
     fn short_hold_is_a_tap() {

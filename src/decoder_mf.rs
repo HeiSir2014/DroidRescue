@@ -36,8 +36,12 @@ use windows::Win32::System::Com::{
 };
 use windows::core::{Interface, PCWSTR};
 
-/// Shared textures in flight: the renderer samples one while we write the next.
-const POOL: usize = 3;
+/// Shared textures in flight. Nothing tells the decoder when DX12 is done
+/// sampling a slot, so the ring must outlast the renderer's frames in
+/// flight (wgpu queues up to ~3) plus decoder bursts while the UI stalls;
+/// 3 slots could be overwritten mid-sample (tearing). An NV12 slot costs
+/// ~3 MB at 1080p, ~8 MB at 2.8K, so 8 is cheap insurance.
+const POOL: usize = 8;
 
 struct Slot {
     texture: ID3D11Texture2D,

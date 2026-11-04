@@ -65,8 +65,39 @@ impl Page {
     }
 }
 
-/// Draw the sidebar in `rect`; returns the page clicked, if any.
-pub fn sidebar(ui: &mut egui::Ui, rect: Rect, current: Page, collapsed: bool) -> Option<Page> {
+/// Device status: a coloured lamp and one line of text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Status {
+    pub lamp: Color32,
+    pub text: String,
+    pub text_color: Color32,
+}
+
+/// Lamp centred at `lamp_center`, text to its right.
+pub fn paint_status(p: &Painter, lamp_center: Pos2, status: &Status) {
+    p.circle_filled(lamp_center, 6.0, status.lamp.gamma_multiply(0.18));
+    p.circle_filled(lamp_center, 3.0, status.lamp);
+    p.text(
+        lamp_center + vec2(10.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        &status.text,
+        theme::mono(10.5),
+        status.text_color,
+    );
+}
+
+/// Height of the status header shown at the top of the sidebar.
+const STATUS_H: f32 = 34.0;
+
+/// Draw the sidebar in `rect`; returns the page clicked, if any. `status`
+/// is shown at the top when the window has no caption of ours (macOS).
+pub fn sidebar(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    current: Page,
+    collapsed: bool,
+    status: Option<&Status>,
+) -> Option<Page> {
     let c = theme::c();
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 0.0, c.surface);
@@ -78,6 +109,20 @@ pub fn sidebar(ui: &mut egui::Ui, rect: Rect, current: Page, collapsed: bool) ->
     let item_h = 40.0;
     let pad = 10.0;
     let mut y = rect.top() + 12.0;
+    if let Some(status) = status {
+        let lamp = pos2(rect.left() + 22.0, y + STATUS_H / 2.0 - 6.0);
+        if collapsed {
+            // Lamp only; the text as a tooltip.
+            p.circle_filled(lamp, 6.0, status.lamp.gamma_multiply(0.18));
+            p.circle_filled(lamp, 3.0, status.lamp);
+            let area = Rect::from_center_size(lamp, vec2(24.0, 24.0));
+            ui.interact(area, ui.id().with("nav-status"), Sense::hover())
+                .on_hover_text(&status.text);
+        } else {
+            paint_status(&ui.painter_at(rect.shrink2(vec2(pad, 0.0))), lamp, status);
+        }
+        y += STATUS_H;
+    }
     for page in Page::MAIN {
         let r = Rect::from_min_size(
             pos2(rect.left() + pad, y),

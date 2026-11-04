@@ -274,8 +274,21 @@ impl Session {
             stopping: AtomicBool::new(false),
         });
 
+        // Every handle the threads need, before any thread starts: a failure
+        // here must still kill the server and remove the tunnel.
+        let clones = (|| {
+            let audio = audio_sock.as_ref().map(TcpStream::try_clone).transpose()?;
+            Ok::<_, std::io::Error>((video.try_clone()?, audio, control.try_clone()?))
+        })();
+        let (demux_sock, audio_reader, mut drain) = match clones {
+            Ok(c) => c,
+            Err(e) => {
+                cleanup(&mut server);
+                return Err(format!("复制连接句柄失败: {e}"));
+            }
+        };
+
         let mut threads = Vec::new();
-        let demux_sock = video.try_clone().map_err(|e| e.to_string())?;
         let s = shared.clone();
         let r = repaint.clone();
         let (dll_dir, demux_log) = (tools.dir.clone(), log.clone());
@@ -297,14 +310,12 @@ impl Session {
             }
         }));
 
-        if let Some(sock) = &audio_sock {
-            let sock = sock.try_clone().map_err(|e| e.to_string())?;
+        if let Some(sock) = audio_reader {
             let (s, log) = (shared.clone(), log.clone());
             threads.push(std::thread::spawn(move || run_audio(sock, &s, &log)));
         }
 
         // Device → client messages (clipboard etc.): drain so the socket never stalls.
-        let mut drain = control.try_clone().map_err(|e| e.to_string())?;
         threads.push(std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             while matches!(drain.read(&mut buf), Ok(n) if n > 0) {}
@@ -513,9 +524,15 @@ fn run_audio(mut sock: TcpStream, shared: &Shared, log: &LogFn) {
         return;
     }
     // The cpal stream is owned by this thread and dropped when the socket closes.
-    let player = match audio::Player::open() {
+    let player = match audio::Player::open(log.clone()) {
         Ok(p) => p,
-        Err(e) => return log(format!("✘ {e}")),
+        Err(e) => {
+            log(format!("✘ 电脑无法播放声音，仅投视频: {e}"));
+            // Keep reading: an unread socket would stall the server's audio.
+            let mut sink = [0u8; 8192];
+            while matches!(sock.read(&mut sink), Ok(n) if n > 0) {}
+            return;
+        }
     };
     log(format!("✔ 声音输出 → {}", player.description));
     let mut header = [0u8; protocol::HEADER_LEN];

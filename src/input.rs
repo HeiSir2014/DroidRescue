@@ -1,9 +1,21 @@
 //! egui input → Android input mapping.
 
-use eframe::egui::{Key, MouseWheelUnit, Vec2};
+use eframe::egui::{Key, Modifiers, MouseWheelUnit, Vec2};
 
-/// Android keycodes for keys that don't arrive as text.
-pub fn android_keycode(key: Key) -> Option<u32> {
+/// Android keycodes for keys that don't arrive as text. With Ctrl or Alt
+/// held, letters and digits arrive only as keys (no text event), so they
+/// map too: Ctrl+A selects all, Ctrl+Z undoes, …
+pub fn android_keycode(key: Key, modifiers: Modifiers) -> Option<u32> {
+    if modifiers.ctrl || modifiers.alt {
+        let name = key.name();
+        if let [c] = name.as_bytes() {
+            match c {
+                b'A'..=b'Z' => return Some(29 + u32::from(c - b'A')), // KEYCODE_A..Z
+                b'0'..=b'9' => return Some(7 + u32::from(c - b'0')),  // KEYCODE_0..9
+                _ => {}
+            }
+        }
+    }
     Some(match key {
         Key::Enter => 66,
         Key::Backspace => 67,
@@ -20,6 +32,22 @@ pub fn android_keycode(key: Key) -> Option<u32> {
         Key::PageDown => 93,
         _ => return None,
     })
+}
+
+/// Android `KeyEvent` meta state for the held modifiers (the generic
+/// flag plus the left-key flag, as a real keyboard reports them).
+pub fn metastate(m: Modifiers) -> u32 {
+    let mut meta = 0;
+    if m.shift {
+        meta |= 0x01 | 0x40; // META_SHIFT_ON | META_SHIFT_LEFT_ON
+    }
+    if m.alt {
+        meta |= 0x02 | 0x10; // META_ALT_ON | META_ALT_LEFT_ON
+    }
+    if m.ctrl {
+        meta |= 0x1000 | 0x2000; // META_CTRL_ON | META_CTRL_LEFT_ON
+    }
+    meta
 }
 
 /// HID keyboard usages for non-text keys (rescue-mode keyboard passthrough).
@@ -45,6 +73,9 @@ pub fn wheel_notches(unit: MouseWheelUnit, delta: Vec2) -> Vec2 {
         MouseWheelUnit::Point => delta / 50.0,
         MouseWheelUnit::Page => delta * 10.0,
     };
+    // egui's delta moves the content (+x = content right = view scrolls
+    // left); Android's AXIS_HSCROLL is +1 = scroll right. Vertical agrees.
+    let notches = Vec2::new(-notches.x, notches.y);
     notches.clamp(Vec2::splat(-16.0), Vec2::splat(16.0))
 }
 
@@ -55,13 +86,43 @@ mod tests {
 
     #[test]
     fn maps_editing_and_navigation_keys() {
-        assert_eq!(android_keycode(Key::Enter), Some(66));
-        assert_eq!(android_keycode(Key::Backspace), Some(67));
-        assert_eq!(android_keycode(Key::ArrowLeft), Some(21));
+        let none = Modifiers::NONE;
+        assert_eq!(android_keycode(Key::Enter, none), Some(66));
+        assert_eq!(android_keycode(Key::Backspace, none), Some(67));
+        assert_eq!(android_keycode(Key::ArrowLeft, none), Some(21));
         assert_eq!(
-            android_keycode(Key::A),
+            android_keycode(Key::A, none),
             None,
             "letters come through as text"
+        );
+        assert_eq!(
+            android_keycode(Key::A, Modifiers::SHIFT),
+            None,
+            "shifted letters are text too"
+        );
+    }
+
+    #[test]
+    fn ctrl_letters_and_digits_become_keycodes() {
+        assert_eq!(android_keycode(Key::A, Modifiers::CTRL), Some(29));
+        assert_eq!(android_keycode(Key::Z, Modifiers::CTRL), Some(54));
+        assert_eq!(android_keycode(Key::Num0, Modifiers::ALT), Some(7));
+        assert_eq!(android_keycode(Key::Num9, Modifiers::CTRL), Some(16));
+    }
+
+    #[test]
+    fn modifiers_become_android_meta_state() {
+        assert_eq!(metastate(Modifiers::NONE), 0);
+        assert_eq!(metastate(Modifiers::CTRL), 0x3000);
+        assert_eq!(metastate(Modifiers::SHIFT | Modifiers::ALT), 0x53);
+    }
+
+    #[test]
+    fn horizontal_wheel_follows_android_direction() {
+        // egui +x = content right = scrolling left = Android hscroll -1.
+        assert_eq!(
+            wheel_notches(MouseWheelUnit::Line, vec2(1.0, 0.0)),
+            vec2(-1.0, 0.0)
         );
     }
 

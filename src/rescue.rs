@@ -355,22 +355,41 @@ pub fn parse_located(script: &str, vars: &[(&str, &str)]) -> Result<Vec<Located>
             if cmd.is_empty() || cmd.starts_with('#') {
                 continue;
             }
+            let written = cmd.clone();
             for (name, value) in vars {
                 cmd = cmd.replace(&format!("{{{name}}}"), value);
             }
-            // `text:` keeps its payload verbatim (it may contain '*').
-            let (body, times) = match cmd.rsplit_once('*') {
-                Some((b, n)) if !cmd.starts_with("text:") && n.trim().parse::<u32>().is_ok() => {
-                    (b.trim().to_string(), n.trim().parse::<u32>().unwrap())
-                }
-                _ => (cmd.clone(), 1),
-            };
-            let step = parse_command(&body).map_err(|message| ScriptError { line, message })?;
+            let (body, times) = split_repeat(&cmd);
+            let step = parse_command(body).map_err(|_| ScriptError {
+                line,
+                // Never echo substituted values — `{pw}` is the lock-screen
+                // PIN and errors end up in the log: describe the line as
+                // written instead.
+                message: match parse_command(split_repeat(&written).0) {
+                    Err(message) => message,
+                    Ok(_) => format!("代入变量后无效: {written}"),
+                },
+            })?;
             steps.extend(std::iter::repeat_n(Located { step, line }, times as usize));
         }
     }
     Ok(steps)
 }
+
+/// `cmd*N` → (cmd, N); `text:` keeps its payload verbatim (it may contain '*').
+fn split_repeat(cmd: &str) -> (&str, u32) {
+    match cmd.rsplit_once('*') {
+        Some((body, n)) if !cmd.starts_with("text:") => match n.trim().parse::<u32>() {
+            Ok(times) => (body.trim(), times),
+            Err(_) => (cmd, 1),
+        },
+        _ => (cmd, 1),
+    }
+}
+
+/// Stand-in for `{pw}` when only checking syntax: not a single key, so a
+/// bare `{pw}` (instead of `text:{pw}`) is caught while editing.
+pub const PW_PLACEHOLDER: &str = "0000";
 
 /// [`parse_located`] without line numbers (errors still name the line).
 pub fn parse(script: &str, vars: &[(&str, &str)]) -> Result<Vec<Step>, String> {
@@ -574,13 +593,19 @@ fn connect(targets: &[UsbTarget], log: &LogFn) -> Result<Aoa, String> {
             return open(targets);
         }
     }
-    Err("等待 WinUSB 安装超时（管理员授权被拒绝？详情见日志）".into())
+    Err("WinUSB 已安装，但设备没有就绪：请重新插拔数据线后再试".into())
 }
 
 fn worker(rx: Receiver<Cmd>, w: Worker) {
     let log = &w.log;
     let mut held: Option<Aoa> = None;
+    // Survives idle releases on purpose: single-stepping after a `rot:`
+    // keeps that orientation however long the user looks at the device;
+    // a fresh run resets it (`start_rotation`).
     let mut rotation = DEFAULT_ROTATION;
+    // Device id of the last device held: a `reconnect` stepped on its own
+    // (no device held) must still wait for the *new* configuration.
+    let mut last_parent = String::new();
     let set = |device: &Option<Aoa>, busy: bool, rotation: u8| {
         let mut s = w.status.lock().unwrap();
         s.device = device.as_ref().map(|a| a.description.clone());
@@ -605,7 +630,6 @@ fn worker(rx: Receiver<Cmd>, w: Worker) {
                 if held.take().is_some() {
                     log("救援: 已释放平板".into());
                 }
-                rotation = DEFAULT_ROTATION;
                 set(&held, false, rotation);
             }
             Cmd::Run(run) if cancelled(&w.stop, run.epoch) => {} // stopped while queued
@@ -620,19 +644,38 @@ fn worker(rx: Receiver<Cmd>, w: Worker) {
                         w.status.lock().unwrap().line = run.lines.get(index).copied();
                     },
                 };
-                let result =
-                    run_workflow(&mut held, &run.steps, &mut rotation, &targets, log, &hooks);
+                let mut device = DeviceState {
+                    held: &mut held,
+                    last_parent: &mut last_parent,
+                };
+                let result = run_workflow(
+                    &mut device,
+                    &run.steps,
+                    &mut rotation,
+                    &targets,
+                    log,
+                    &hooks,
+                );
                 match result {
-                    Ok(o) if o.skipped > 0 => log(format!(
-                        "✘ 救援/{name}: {} 个非 ASCII 字符无法用 USB 键盘输入",
-                        o.skipped
-                    )),
-                    Ok(o) if o.device_left => {
-                        log(format!("✔ 救援/{name}: 平板已切换 USB 模式并重新连接"));
-                        held = None;
+                    Ok(o) => {
+                        if o.skipped > 0 {
+                            log(format!(
+                                "✘ 救援/{name}: {} 个非 ASCII 字符无法用 USB 键盘输入",
+                                o.skipped
+                            ));
+                        }
+                        if o.device_left {
+                            // Checked: the device stopped answering (USB mode
+                            // switch). The next run reconnects.
+                            log(format!(
+                                "✔ 救援/{name}: 设备已切换 USB 模式（断开后会自动重新连接）"
+                            ));
+                            held = None;
+                        } else if o.skipped == 0 && !name.is_empty() {
+                            // (keyboard passthrough has no name: too chatty)
+                            log(format!("✔ 救援/{name}"));
+                        }
                     }
-                    Ok(_) if name.is_empty() => {} // keyboard passthrough: too chatty to log
-                    Ok(_) => log(format!("✔ 救援/{name}")),
                     // The device is fine: keep holding it for the next run.
                     Err(e) if e == STOPPED => log(format!("■ 救援/{name}: 已停止")),
                     Err(e) => {
@@ -675,14 +718,28 @@ struct Outcome {
 
 /// Run a workflow, splitting it at `reconnect` steps: each segment runs on a
 /// fresh connection once the tablet has come back.
+/// The worker's device: the held connection, and the id of the last device
+/// held (what a `reconnect` waits to see replaced, even when stepped alone).
+struct DeviceState<'a> {
+    held: &'a mut Option<Aoa>,
+    last_parent: &'a mut String,
+}
+
+/// Device id a `reconnect` must see go away (or change): the held device,
+/// else the last one held.
+fn previous_parent(held: Option<&str>, last: &str) -> String {
+    held.unwrap_or(last).to_string()
+}
+
 fn run_workflow(
-    held: &mut Option<Aoa>,
+    device: &mut DeviceState,
     steps: &[Step],
     rotation: &mut u8,
     targets: &[UsbTarget],
     log: &LogFn,
     hooks: &Hooks,
 ) -> Result<Outcome, String> {
+    let held = &mut *device.held;
     let mut outcome = Outcome::default();
     // Index of the segment's first step in `steps` (for progress).
     let mut offset = 0;
@@ -703,6 +760,7 @@ fn run_workflow(
             if held.is_none() {
                 let aoa = connect(targets, log)?;
                 log(format!("✔ 救援: 已接管 {}", aoa.description));
+                *device.last_parent = aoa.parent().to_string();
                 *held = Some(aoa);
             }
             let left = run_segment(
@@ -717,12 +775,11 @@ fn run_workflow(
         }
         if let Some(ms) = reconnect {
             (hooks.on_step)(offset + body.len());
-            let previous = held
-                .take()
-                .map(|a| a.parent().to_string())
-                .unwrap_or_default();
+            let previous =
+                previous_parent(held.take().as_ref().map(Aoa::parent), device.last_parent);
             let aoa = wait_for_device(&previous, ms, targets, log, hooks)?;
             log(format!("✔ 救援: 平板重新连接 ({})", aoa.parent()));
+            *device.last_parent = aoa.parent().to_string();
             *held = Some(aoa);
             outcome.device_left = false;
         }
@@ -802,7 +859,12 @@ fn run_segment(
 ) -> Result<bool, String> {
     match run_steps(aoa, steps, offset, rotation, skipped, hooks) {
         Ok(()) => Ok(false),
-        Err((index, e)) if e != STOPPED && only_waits_after(steps, index) => Ok(true),
+        // Only when the device really stopped answering: otherwise a failed
+        // last step (any single step, key or passthrough key) would be
+        // reported as a mode switch while nothing reached the device.
+        Err((index, e)) if e != STOPPED && only_waits_after(steps, index) && !aoa.alive() => {
+            Ok(true)
+        }
         Err((_, e)) => Err(e),
     }
 }
@@ -961,6 +1023,22 @@ mod tests {
         assert!(parse("rot:4", &[]).is_err());
     }
 
+    /// Errors end up in the log: they must never contain a substituted PIN.
+    #[test]
+    fn script_errors_never_reveal_substituted_values() {
+        let secret = "735919";
+        for script in ["wake; {pw}; enter", "rot:{pw}", "click:{pw},0.5"] {
+            let err = parse(script, &[("pw", secret)]).unwrap_err();
+            assert!(!err.contains(secret), "{script}: {err}");
+            assert!(err.contains("{pw}"), "describes the line as written: {err}");
+        }
+        assert!(
+            parse("wake; {pw}", &[("pw", PW_PLACEHOLDER)]).is_err(),
+            "a bare {{pw}} is caught by validation"
+        );
+        parse("text:{pw}; enter", &[("pw", PW_PLACEHOLDER)]).unwrap();
+    }
+
     #[test]
     fn steps_remember_their_source_line() {
         let script = "# setup\nwake; wait:100\n\nclick:0.5,0.5\nenter*2";
@@ -1030,8 +1108,13 @@ mod tests {
             on_step: &|i| lines.lock().unwrap().push(i),
         };
         let log: LogFn = Arc::new(|_| {});
+        let mut last_parent = String::new();
+        let mut device = DeviceState {
+            held: &mut held,
+            last_parent: &mut last_parent,
+        };
         let outcome = run_workflow(
-            &mut held,
+            &mut device,
             &[Step::Rotation(0)],
             &mut rotation,
             &[],
@@ -1043,6 +1126,17 @@ mod tests {
         assert_eq!(rotation, 0);
         assert_eq!(*lines.lock().unwrap(), [0]);
         assert!(held.is_none());
+    }
+
+    /// A `reconnect` single-stepped after the device dropped (nothing held)
+    /// still waits for the configuration that replaces the last one.
+    #[test]
+    fn reconnect_without_a_held_device_waits_for_a_new_configuration() {
+        assert_eq!(previous_parent(None, OLD), OLD);
+        assert_eq!(previous_parent(Some(NEW), OLD), NEW);
+        // …so the lingering old device is not taken as "reconnected":
+        let previous = previous_parent(None, OLD);
+        assert!(!is_new_configuration(&previous, false, &[OLD.into()]));
     }
 
     #[test]
@@ -1171,8 +1265,12 @@ mod tests {
         let log: LogFn = Arc::new(|l| println!("{l}"));
         let mut held = None;
         let mut rotation = DEFAULT_ROTATION;
+        let mut last_parent = String::new();
         let outcome = run_workflow(
-            &mut held,
+            &mut DeviceState {
+                held: &mut held,
+                last_parent: &mut last_parent,
+            },
             &steps,
             &mut rotation,
             &targets,

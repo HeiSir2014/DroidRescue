@@ -12,14 +12,16 @@ impl PadApp {
             "编写机型的解锁 / 一键救援脚本：实时检查语法，运行、单步、运行当前行，保存到机型配置。",
         );
         let status = self.rescue.status.lock().unwrap().clone();
-        let password = self.rescue_password(snap, status.serial.as_deref());
         let current = self.profile(snap).cloned();
+        // Looked up only when a script runs, not every frame.
+        let (typed, store) = (&self.password, &self.passwords);
+        let password = || crate::rescue_password_for(typed, store, snap, status.serial.as_deref());
         let cx = workbench::Context {
             rescue: &self.rescue,
             status: &status,
             profiles: &self.profiles,
             current: current.as_ref(),
-            password,
+            password: &password,
             adb_model: snap.selected_model(),
         };
         for action in self.workbench.ui(ui, &cx) {
@@ -55,10 +57,7 @@ impl PadApp {
                     format!("✔ 已保存机型「{}」到 {}", profile.name, path.display()),
                 );
             }
-            Err(e) => log(
-                &self.shared,
-                format!("✘ 保存机型配置失败 {}: {e}", path.display()),
-            ),
+            Err(e) => log(&self.shared, format!("✘ 保存机型配置失败: {e}")),
         }
     }
 }

@@ -17,6 +17,8 @@ mod decoder_mf;
 #[cfg(target_os = "macos")]
 #[path = "macos/decoder_vt.rs"]
 mod decoder_vt;
+#[cfg(test)]
+mod e2e;
 mod geometry;
 mod guide;
 mod input;
@@ -67,7 +69,13 @@ use widgets::CaptionIcon;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_LOG_LINES: usize = 500;
-const CAPTION_H: f32 = 40.0;
+/// Our own caption (title bar) height — Windows only. macOS uses the native
+/// title bar: content drawn under a transparent one gets partly covered by
+/// the system's title-bar layer (the app name showed only a sliver).
+const CAPTION_H: f32 = if OWN_CAPTION { 40.0 } else { 0.0 };
+// Our caption exactly where the window has no native title bar.
+const _: () = assert!(OWN_CAPTION == (CAPTION_H > 0.0));
+const _: () = assert!(OWN_CAPTION != cfg!(target_os = "macos"));
 const RESIZE_BORDER: f32 = 6.0;
 /// First-launch window: sidebar + a comfortable page.
 const DEFAULT_SIZE: [f32; 2] = [1120.0, 780.0];
@@ -117,7 +125,7 @@ struct Shared {
     /// adb serial → hardware serial (`ro.serialno`), stable across USB/WiFi.
     device_ids: HashMap<String, String>,
     /// adb serial → highest panel refresh rate the device supports.
-    device_hz: HashMap<String, f32>,
+    device_hz: HashMap<String, Option<f32>>,
     /// adb serial → friendly name ("vivo Pad3" rather than "PA2455").
     friendly: HashMap<String, String>,
     awake: Option<bool>,
@@ -198,25 +206,55 @@ fn app_icon() -> egui::IconData {
         .expect("embedded icon is a valid PNG")
 }
 
-/// Window decorations. Windows: none — egui paints the caption and frame,
-/// chrome.rs hit-tests them natively. macOS: the native window with a
-/// transparent full-size title bar, so the traffic lights, resizing,
-/// shadow and rounded corners stay native and our caption shows through.
-fn native_chrome(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
-    if cfg!(target_os = "macos") {
-        builder
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false)
-    } else {
-        builder.with_decorations(false)
+/// Password for a blind unlock: typed > saved for this device (held /
+/// plugged-in USB serial, adb device) > the only saved password. May
+/// decrypt (DPAPI / Keychain): call when needed, not every frame.
+fn rescue_password_for(
+    typed: &str,
+    store: &secrets::PasswordStore,
+    snap: &Snapshot,
+    usb_serial: Option<&str>,
+) -> Option<String> {
+    if !typed.is_empty() {
+        return Some(typed.to_string());
     }
+    let plugged = match snap.usb_serials.as_slice() {
+        [one] => Some(one.as_str()),
+        _ => None,
+    };
+    [
+        usb_serial,
+        plugged,
+        snap.device_id.as_deref(),
+        store.only_id().as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|id| store.get(id).ok().flatten())
 }
 
-/// Room at the caption's left for the macOS traffic lights.
-const CAPTION_INSET: f32 = if cfg!(target_os = "macos") { 72.0 } else { 0.0 };
-/// The caption draws its own minimise / maximise / close buttons (Windows).
-const OWN_CAPTION_BUTTONS: bool = !cfg!(target_os = "macos");
+/// Window decorations. Windows: none — egui paints the caption and frame,
+/// chrome.rs hit-tests them natively. macOS: the standard native window
+/// (title bar with the app name and traffic lights; its light/dark follows
+/// the app's theme setting, see [`apply_window_theme`]).
+fn native_chrome(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    builder.with_decorations(!OWN_CAPTION)
+}
+
+/// The OS-drawn window parts (macOS title bar) follow the app's theme
+/// choice, not only the system's, so title bar and content always match.
+fn apply_window_theme(ctx: &egui::Context, preference: egui::ThemePreference) {
+    let theme = match preference {
+        egui::ThemePreference::System => egui::SystemTheme::SystemDefault,
+        egui::ThemePreference::Light => egui::SystemTheme::Light,
+        egui::ThemePreference::Dark => egui::SystemTheme::Dark,
+    };
+    ctx.send_viewport_cmd(ViewportCommand::SetTheme(theme));
+}
+
+/// We draw the title bar, frame and window buttons ourselves (Windows,
+/// hit-tested natively by chrome.rs). macOS keeps the native title bar.
+const OWN_CAPTION: bool = !cfg!(target_os = "macos");
 
 /// Notepad on Windows, the default text editor (TextEdit) on macOS.
 fn open_in_text_editor(path: &std::path::Path) -> std::io::Result<std::process::Child> {
@@ -277,7 +315,7 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
 
             if let Some(ser) = serial.as_deref()
                 && !shared.lock().unwrap().device_ids.contains_key(ser)
-                && let Ok(hw) = tools.shell(Some(ser), "getprop ro.serialno")
+                && let Ok(hw) = tools.shell(Some(ser), adb::SERIALNO_CMD)
             {
                 let id = if hw.is_empty() { ser.to_string() } else { hw };
                 shared
@@ -287,13 +325,15 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
                     .insert(ser.to_string(), id);
             }
 
+            // Asked once per device: a device without the line would
+            // otherwise run dumpsys on every poll.
             if let Some(ser) = serial.as_deref()
                 && !shared.lock().unwrap().device_hz.contains_key(ser)
-                && let Some(hz) = tools
-                    .shell(Some(ser), "dumpsys display | grep -oE 'fps=[0-9.]+'")
-                    .ok()
-                    .and_then(|o| adb::parse_max_refresh(&o))
             {
+                let hz = tools
+                    .shell(Some(ser), adb::REFRESH_CMD)
+                    .ok()
+                    .and_then(|o| adb::parse_max_refresh(&o));
                 shared.lock().unwrap().device_hz.insert(ser.to_string(), hz);
             }
 
@@ -315,15 +355,15 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
             let (awake, locked, orientation) = match serial.as_deref() {
                 Some(ser) => (
                     tools
-                        .shell(Some(ser), "dumpsys power | grep mWakefulness=")
+                        .shell(Some(ser), adb::AWAKE_CMD)
                         .ok()
                         .and_then(|o| adb::parse_awake(&o)),
                     tools
-                        .shell(Some(ser), "dumpsys window | grep isKeyguardShowing")
+                        .shell(Some(ser), adb::KEYGUARD_CMD)
                         .ok()
                         .and_then(|o| adb::parse_keyguard_showing(&o)),
                     tools
-                        .shell(Some(ser), "dumpsys input | grep -m1 'Viewport INTERNAL'")
+                        .shell(Some(ser), adb::ORIENTATION_CMD)
                         .ok()
                         .and_then(|o| protocol::parse_orientation(&o)),
                 ),
@@ -476,6 +516,9 @@ struct PadApp {
     sized_once: bool,
     /// Frames left before the window size is trusted again after a resize.
     settle: u8,
+    /// Fit the window to the picture next frame (after the compact minimum
+    /// size has been applied).
+    fit_pending: bool,
 }
 
 impl PadApp {
@@ -557,6 +600,44 @@ impl PadApp {
             idle_width: DEFAULT_SIZE[0],
             sized_once: false,
             settle: 0,
+            fit_pending: false,
+        }
+    }
+
+    /// Lamp + one-line device status (caption on Windows, sidebar on macOS).
+    fn device_status(&self, snap: &Snapshot) -> nav::Status {
+        let c = theme::c();
+        let live = self.session().is_some();
+        let selected = snap
+            .devices
+            .iter()
+            .find(|d| Some(&d.serial) == snap.selected.as_ref());
+        let unauthorized = snap.devices.iter().any(|d| d.state == "unauthorized");
+        let (lamp, text) = if let Some(task) = snap.tasks.first() {
+            (c.amber, format!("{task}…"))
+        } else if matches!(self.mirror, MirrorState::Connecting(_)) {
+            (c.amber, "CONNECTING…".to_string())
+        } else if let Some(d) = selected {
+            let name = snap.name_of(d);
+            if live {
+                (c.amber, format!("{name} · LIVE"))
+            } else {
+                (c.green, name)
+            }
+        } else if unauthorized {
+            (c.red, "未授权 · 请在设备上允许 USB 调试".to_string())
+        } else {
+            (c.text_faint, "OFFLINE".to_string())
+        };
+        let text_color = if lamp == c.green || lamp == c.text_faint {
+            c.text_dim
+        } else {
+            lamp
+        };
+        nav::Status {
+            lamp,
+            text,
+            text_color,
         }
     }
 
@@ -768,9 +849,15 @@ impl PadApp {
         let mut opts = self.opts.clone();
         // Capture at most min(panel, monitor) fps: extra frames would only
         // cost encode time and bandwidth without ever being shown.
-        let device_hz = serial
-            .as_ref()
-            .and_then(|s| self.shared.lock().unwrap().device_hz.get(s).copied());
+        let device_hz = serial.as_ref().and_then(|s| {
+            self.shared
+                .lock()
+                .unwrap()
+                .device_hz
+                .get(s)
+                .copied()
+                .flatten()
+        });
         let monitor_hz = (self.hwnd != 0)
             .then(|| chrome::monitor_refresh_hz(self.hwnd))
             .flatten();
@@ -804,14 +891,39 @@ impl PadApp {
                 repaint,
             ));
         });
-        self.mirror = MirrorState::Connecting(rx);
+        self.replace_mirror(MirrorState::Connecting(rx));
         self.fps = FpsMeter::default();
     }
 
     fn stop_mirror(&mut self) {
         if !matches!(self.mirror, MirrorState::Idle) {
-            self.mirror = MirrorState::Idle; // drops the session: sockets, server, tunnel
+            self.replace_mirror(MirrorState::Idle);
             log(&self.shared, "■ 投屏已停止");
+        }
+    }
+
+    /// Ending a session joins its threads, kills the server and removes the
+    /// tunnel (adb round trips): done on a thread so the UI never stalls.
+    /// A dropped `Connecting` receiver makes the connecting thread drop the
+    /// session it is about to deliver.
+    fn replace_mirror(&mut self, next: MirrorState) {
+        if let MirrorState::Running(old) = std::mem::replace(&mut self.mirror, next) {
+            thread::spawn(move || drop(old));
+        }
+    }
+
+    /// On exit nothing may outlive the process half-done: the panel must be
+    /// back on and the tunnel gone, so end the session here and now, and
+    /// give a connection in progress a moment to arrive and be ended too.
+    fn end_mirror_now(&mut self) {
+        match std::mem::replace(&mut self.mirror, MirrorState::Idle) {
+            MirrorState::Running(session) => drop(session),
+            MirrorState::Connecting(rx) => {
+                if let Ok(Ok(session)) = rx.recv_timeout(Duration::from_secs(3)) {
+                    drop(session);
+                }
+            }
+            MirrorState::Idle => {}
         }
     }
 
@@ -838,7 +950,7 @@ impl PadApp {
             MirrorState::Idle => None,
         };
         if let Some(n) = next {
-            self.mirror = n;
+            self.replace_mirror(n);
         }
     }
 
@@ -883,92 +995,55 @@ impl PadApp {
     }
 
     fn send_unlock(&self, password: &str) {
-        let text = adb::quote_input_text(password);
+        let password = password.to_string();
         self.run_task("解锁", move |t, ser, sh| {
-            let steps = [
-                ("唤醒", "input keyevent 224".to_string()),
-                ("上滑", adb::SWIPE_UP_CMD.to_string()),
-                ("输入密码", format!("input text {text}")),
-                ("回车", "input keyevent 66".to_string()),
-            ];
-            for (name, cmd) in steps {
-                if let Err(e) = t.shell(ser, &cmd) {
-                    // Never echo the command: it may contain the password.
-                    log(
-                        sh,
-                        format!("✘ 解锁/{name} 失败: {}", e.replace(&text, "***")),
-                    );
-                    return;
-                }
-                thread::sleep(Duration::from_millis(600));
+            match adb::unlock(t, ser, &password) {
+                Ok(()) => log(sh, "✔ 已发送解锁序列"),
+                Err(e) => log(sh, format!("✘ {e}")),
             }
-            log(sh, "✔ 已发送解锁序列");
         });
     }
 
     fn enable_wireless(&self) {
         self.run_task("无线调试", |t, ser, sh| {
-            let ip = match t.shell(ser, "ip -f inet addr show wlan0") {
-                Ok(out) => adb::parse_wlan_ip(&out),
-                Err(e) => return log(sh, format!("✘ 获取 IP 失败: {e}")),
-            };
-            let Some(ip) = ip else {
-                return log(sh, "✘ 平板没连 WiFi（wlan0 没有 IP）");
-            };
-            log_result(sh, "adb tcpip 5555", run_adb(t, ser, &["tcpip", "5555"]));
-            thread::sleep(Duration::from_secs(2));
-            let target = format!("{ip}:5555");
-            log_result(
-                sh,
-                &format!("adb connect {target}"),
-                run_adb(t, None, &["connect", &target]),
-            );
-            log(sh, "拔掉 USB 后在设备列表里选 IP 那一项即可无线投屏");
+            match adb::enable_wireless(t, ser) {
+                Ok(target) => log(
+                    sh,
+                    format!("✔ 已无线连接 {target}：拔掉数据线后在首页选这台设备即可"),
+                ),
+                Err(e) => log(sh, format!("✘ 无线 ADB: {e}")),
+            }
         });
     }
 
     fn backup(&self) {
-        let dest = self.backup_dir.clone();
+        let dest = std::path::PathBuf::from(&self.backup_dir);
         self.run_task("备份", move |t, ser, sh| {
-            if let Err(e) = std::fs::create_dir_all(&dest) {
-                return log(sh, format!("✘ 无法创建 {dest}: {e}"));
-            }
-            for dir in [
-                "DCIM",
-                "Pictures",
-                "Download",
-                "Documents",
-                "Movies",
-                "Music",
-            ] {
-                log(sh, format!("… 导出 /sdcard/{dir}"));
-                let src = format!("/sdcard/{dir}");
-                log_result(
-                    sh,
-                    &format!("导出 {dir}"),
-                    run_adb(t, ser, &["pull", "-a", &src, &dest]),
-                );
-            }
-            log(sh, format!("✔ 备份完成 → {dest}"));
+            let result = adb::backup(t, ser, &dest, &|line| log(sh, line));
+            log(sh, result.summary(&dest));
         });
     }
 
     // ───────────────────────── chrome ─────────────────────────
 
-    /// Draws the title bar; returns the left x of the caption controls.
+    /// Draws our title bar (Windows; non-client, hit-tested by chrome.rs);
+    /// returns the left x of the caption controls.
     fn caption(&mut self, ui: &mut egui::Ui, snap: &Snapshot, maximized: bool) -> f32 {
         let (rect, drag) = ui.allocate_exact_size(
             vec2(ui.available_width(), CAPTION_H),
             egui::Sense::click_and_drag(),
         );
-        // On Windows the caption is non-client (chrome.rs), so these events
-        // only arrive on macOS: drag moves the window, double-click zooms.
-        if drag.drag_started() {
-            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
-        }
-        if drag.double_clicked() {
-            ui.ctx()
-                .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+        // Normally the caption is non-client (chrome.rs hit-testing) and no
+        // pointer events reach egui. Without a Win32 handle chrome.rs is not
+        // installed: move / zoom the undecorated window from here instead.
+        if self.hwnd == 0 {
+            if drag.drag_started() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+            }
+            if drag.double_clicked() {
+                ui.ctx()
+                    .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+            }
         }
         let p = ui.painter();
         p.rect_filled(rect, 0.0, theme::c().surface);
@@ -979,61 +1054,16 @@ impl PadApp {
 
         let y = rect.center().y;
         let mark = p.text(
-            pos2(rect.left() + 14.0 + CAPTION_INSET, y),
+            pos2(rect.left() + 14.0, y),
             Align2::LEFT_CENTER,
             "安卓救援宝",
             theme::strong_font(15.0),
             theme::c().amber,
         );
-        // The English name lives in the OS window title (taskbar, Alt-Tab):
-        // the 340 px rail has no room for both next to the status.
-        let sub = mark;
-
-        let ready = snap.selected.is_some();
-        let unauthorized = snap.devices.iter().any(|d| d.state == "unauthorized");
-        let live = self.session().is_some();
-        let lamp = if live {
-            theme::c().amber
-        } else if ready {
-            theme::c().green
-        } else if unauthorized {
-            theme::c().red
-        } else {
-            theme::c().text_faint
-        };
-        let lamp_c = pos2(sub.right() + 14.0, y);
-        p.circle_filled(lamp_c, 6.0, lamp.gamma_multiply(0.18));
-        p.circle_filled(lamp_c, 3.0, lamp);
-        let status = if let Some(task) = snap.tasks.first() {
-            format!("{task}…")
-        } else if matches!(self.mirror, MirrorState::Connecting(_)) {
-            "CONNECTING…".into()
-        } else if let Some(d) = snap
-            .devices
-            .iter()
-            .find(|d| Some(&d.serial) == snap.selected.as_ref())
-        {
-            let name = snap.name_of(d);
-            if live {
-                format!("{name} · LIVE")
-            } else {
-                name
-            }
-        } else {
-            "OFFLINE".into()
-        };
-        let color = if snap.tasks.is_empty() && !live {
-            theme::c().text_dim
-        } else {
-            theme::c().amber
-        };
-        p.text(
-            pos2(lamp_c.x + 10.0, y),
-            Align2::LEFT_CENTER,
-            status,
-            theme::mono(10.5),
-            color,
-        );
+        // The English name lives in the OS window title (taskbar, Alt-Tab).
+        let status = self.device_status(snap);
+        let lamp_c = pos2(mark.right() + 14.0, y);
+        nav::paint_status(p, lamp_c, &status);
 
         let mut controls_left = rect.right();
         let builder = egui::UiBuilder::new()
@@ -1046,22 +1076,20 @@ impl PadApp {
                 controls_left = controls_left.min(r.rect.left());
                 r
             };
-            if OWN_CAPTION_BUTTONS {
-                if button(ui, CaptionIcon::Close, "关闭").clicked() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                }
-                let (icon, tip) = if maximized {
-                    (CaptionIcon::Restore, "还原")
-                } else {
-                    (CaptionIcon::Maximize, "最大化")
-                };
-                if button(ui, icon, tip).clicked() {
-                    ui.ctx()
-                        .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
-                }
-                if button(ui, CaptionIcon::Minimize, "最小化").clicked() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
-                }
+            if button(ui, CaptionIcon::Close, "关闭").clicked() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+            }
+            let (icon, tip) = if maximized {
+                (CaptionIcon::Restore, "还原")
+            } else {
+                (CaptionIcon::Maximize, "最大化")
+            };
+            if button(ui, icon, tip).clicked() {
+                ui.ctx()
+                    .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+            }
+            if button(ui, CaptionIcon::Minimize, "最小化").clicked() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
             }
         });
         controls_left
@@ -1177,25 +1205,9 @@ impl PadApp {
         }
     }
 
-    /// Password for a blind unlock: typed in 04 > saved for this device (held
-    /// / plugged-in USB serial, adb device) > the only saved password.
+    /// See [`rescue_password_for`].
     fn rescue_password(&self, snap: &Snapshot, usb_serial: Option<&str>) -> Option<String> {
-        if !self.password.is_empty() {
-            return Some(self.password.clone());
-        }
-        let plugged = match snap.usb_serials.as_slice() {
-            [one] => Some(one.as_str()),
-            _ => None,
-        };
-        [
-            usb_serial,
-            plugged,
-            snap.device_id.as_deref(),
-            self.passwords.only_id().as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|id| self.passwords.get(id).ok().flatten())
+        rescue_password_for(&self.password, &self.passwords, snap, usb_serial)
     }
 
     /// Keyboard passthrough: this frame's typing → HID keyboard on the tablet.
@@ -1266,6 +1278,12 @@ impl PadApp {
     /// Resize horizontally without moving the rail on screen (the stage opens
     /// or closes on the far side) — no jump under the user's cursor.
     fn set_width(&mut self, ctx: &egui::Context, width: f32) {
+        // A maximized window keeps its size: resizing it would leave a
+        // window that is no longer full-screen yet still in the maximized
+        // state (Restore button, no resize edges).
+        if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+            return;
+        }
         self.settle = RESIZE_SETTLE_FRAMES;
         if self.hwnd != 0 {
             let px = (width * ctx.pixels_per_point()).round() as i32;
@@ -1371,16 +1389,29 @@ fn forward_input(
                 key,
                 pressed,
                 repeat,
+                modifiers,
                 ..
             } if st.focused => {
-                if let Some(code) = input::android_keycode(*key) {
+                if let Some(code) = input::android_keycode(*key, *modifiers) {
                     let action = if *pressed {
                         KeyAction::Down
                     } else {
                         KeyAction::Up
                     };
-                    s.send(&control::keycode(action, code, u32::from(*repeat), 0));
+                    let meta = input::metastate(*modifiers);
+                    s.send(&control::keycode(action, code, u32::from(*repeat), meta));
                 }
+            }
+            // The PC turns Ctrl+C / Ctrl+X into these instead of keys.
+            egui::Event::Copy | egui::Event::Cut if st.focused => {
+                let code = if matches!(ev, egui::Event::Copy) {
+                    31
+                } else {
+                    52
+                }; // C / X
+                let meta = input::metastate(egui::Modifiers::CTRL);
+                s.send(&control::keycode(KeyAction::Down, code, 0, meta));
+                s.send(&control::keycode(KeyAction::Up, code, 0, meta));
             }
             _ => {}
         }
@@ -1466,25 +1497,6 @@ fn combo_row<T: PartialEq + Copy>(
     });
 }
 
-fn run_adb(t: &Tools, serial: Option<&str>, args: &[&str]) -> Result<String, String> {
-    let out = t.adb(serial, args).map_err(|e| e.to_string())?;
-    let text = format!(
-        "{} {}",
-        String::from_utf8_lossy(&out.stdout).trim(),
-        String::from_utf8_lossy(&out.stderr).trim()
-    )
-    .trim()
-    .lines()
-    .last()
-    .unwrap_or("")
-    .to_string();
-    if out.status.success() {
-        Ok(text)
-    } else {
-        Err(text)
-    }
-}
-
 impl eframe::App for PadApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
@@ -1527,12 +1539,19 @@ impl eframe::App for PadApp {
             )));
         }
         if compact && !self.was_compact {
+            // Fit next frame: the lower minimum size above is applied after
+            // this frame, and Windows clamps a resize to the minimum in force
+            // (the picture would sit in a page-wide window).
+            self.fit_pending = true;
+            ctx.request_repaint();
+        } else if compact && std::mem::take(&mut self.fit_pending) {
             // No stream yet: best guess from the model and current rotation;
             // the stage refits once the first frame reveals the real shape.
             let model = skin::Model::for_device(snap.selected_model(), (0, 0), snap.orientation);
             let extent = model.extent(skin::turns_for(&model, snap.orientation, None));
             self.fit_window(&ctx, self.last_extent.unwrap_or(extent));
         } else if !compact && self.was_compact {
+            self.fit_pending = false;
             self.set_width(&ctx, self.idle_width);
             self.last_extent = None;
         }
@@ -1551,15 +1570,16 @@ impl eframe::App for PadApp {
             .frame(egui::Frame::NONE.fill(theme::c().bg))
             .show(root, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                let controls_left = self.caption(ui, &snap, maximized);
-
-                let ppp = ctx.pixels_per_point();
-                chrome::set_layout(ChromeLayout {
-                    caption_height: (CAPTION_H * ppp).round() as i32,
-                    controls_left: (controls_left * ppp).round() as i32,
-                    border: (RESIZE_BORDER * ppp).round() as i32,
-                    resizable: if maximized { Edges::NONE } else { Edges::ALL },
-                });
+                if OWN_CAPTION {
+                    let controls_left = self.caption(ui, &snap, maximized);
+                    let ppp = ctx.pixels_per_point();
+                    chrome::set_layout(ChromeLayout {
+                        caption_height: (CAPTION_H * ppp).round() as i32,
+                        controls_left: (controls_left * ppp).round() as i32,
+                        border: (RESIZE_BORDER * ppp).round() as i32,
+                        resizable: if maximized { Edges::NONE } else { Edges::ALL },
+                    });
+                }
 
                 let body = ui.available_rect_before_wrap();
                 let nav_w = if compact {
@@ -1568,7 +1588,11 @@ impl eframe::App for PadApp {
                     nav::NAV_W
                 };
                 let (nav_rect, page_rect) = split_body(body, nav_w);
-                if let Some(page) = nav::sidebar(ui, nav_rect, self.page, compact) {
+                // Our caption shows the device status; without one (macOS)
+                // the sidebar does.
+                let status = (!OWN_CAPTION).then(|| self.device_status(&snap));
+                if let Some(page) = nav::sidebar(ui, nav_rect, self.page, compact, status.as_ref())
+                {
                     self.page = page;
                 }
                 let log_h = if self.log_open {
@@ -1600,7 +1624,7 @@ impl eframe::App for PadApp {
                     });
                 }
                 self.log_drawer(ui, log_rect, &snap);
-                if OWN_CAPTION_BUTTONS {
+                if OWN_CAPTION {
                     // macOS draws its own window border.
                     widgets::window_frame(ui, focused);
                 }
@@ -1613,7 +1637,7 @@ impl eframe::App for PadApp {
     }
 
     fn on_exit(&mut self) {
-        self.stop_mirror();
+        self.end_mirror_now();
     }
 }
 
@@ -1651,9 +1675,13 @@ fn main() -> eframe::Result {
     if std::env::args().nth(1).as_deref() == Some(usbhost::INSTALL_FLAG) {
         let shared: SharedRef = Arc::default();
         let targets = usbid::UsbTarget::parse_list(&std::env::args().nth(2).unwrap_or_default());
+        // The exit code is the result the waiting parent reports.
         match targets.and_then(|t| usbhost::install(&t)) {
             Ok(ids) => log(&shared, format!("✔ WinUSB 已安装到 {}", ids.join(", "))),
-            Err(e) => log(&shared, format!("✘ WinUSB 安装失败: {e}")),
+            Err(e) => {
+                log(&shared, format!("✘ WinUSB 安装失败: {e}"));
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }
@@ -1711,6 +1739,8 @@ fn main() -> eframe::Result {
                 }
                 Err(e) => log(&app.shared, format!("✘ 迁移旧版 padctl 数据失败: {e}")),
             }
+            // The persisted choice also applies to the OS-drawn title bar.
+            apply_window_theme(&cc.egui_ctx, cc.egui_ctx.options(|o| o.theme_preference));
             Ok(Box::new(app))
         }),
     )
