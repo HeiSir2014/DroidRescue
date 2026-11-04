@@ -25,6 +25,9 @@ mod protocol;
 mod rescue;
 mod secrets;
 mod skin;
+#[cfg(target_os = "macos")]
+#[path = "macos/surface.rs"]
+mod surface;
 mod theme;
 #[cfg(windows)]
 mod usbdev;

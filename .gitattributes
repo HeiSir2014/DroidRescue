@@ -3,4 +3,6 @@
 *.ttf binary
 *.png binary
 *.h264 binary
+*.ico binary
+*.icns binary
 *.sh text eol=lf

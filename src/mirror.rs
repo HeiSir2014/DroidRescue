@@ -388,14 +388,17 @@ fn connect_with_dummy(port: u16) -> Result<TcpStream, String> {
     Err("连接 scrcpy-server 超时（平板上 server 未启动？）".into())
 }
 
-/// macOS: VideoToolbox (hardware; read back to the CPU for now).
+/// macOS: VideoToolbox; zero-copy into Metal when the renderer can import
+/// IOSurfaces (`gpu_luid` is then `Some`), CPU upload otherwise.
 #[cfg(target_os = "macos")]
 fn open_decoder(
-    _gpu_luid: Option<i64>,
+    gpu_luid: Option<i64>,
     _dll_dir: &std::path::Path,
     _log: &LogFn,
 ) -> Result<Box<dyn Decoder>, String> {
-    Ok(Box::new(crate::decoder_vt::VtDecoder::new()))
+    Ok(Box::new(crate::decoder_vt::VtDecoder::new(
+        gpu_luid.is_some(),
+    )))
 }
 
 /// Hardware zero-copy when possible, FFmpeg on the CPU otherwise.

@@ -91,7 +91,23 @@ enum Current {
     None,
     I420,
     Nv12(isize),
+    /// The newest imported IOSurface frame (macOS).
+    #[cfg(target_os = "macos")]
+    Surface,
 }
+
+/// macOS zero-copy: imported frames stay alive (with the CVPixelBuffers
+/// they alias) until the GPU can no longer be reading them.
+#[cfg(target_os = "macos")]
+struct Surfaces {
+    cache: crate::surface::TextureCache,
+    /// Newest last; a few kept because frames may still be in flight.
+    frames: std::collections::VecDeque<(crate::surface::Imported, wgpu::BindGroup)>,
+}
+
+/// Frames kept alive behind the one being shown (frames in flight + slack).
+#[cfg(target_os = "macos")]
+const SURFACES_KEPT: usize = 3;
 
 struct Resources {
     i420: Pipeline,
@@ -105,12 +121,15 @@ struct Resources {
     imported: HashMap<isize, wgpu::BindGroup>,
     pool: u64,
     current: Current,
+    #[cfg(target_os = "macos")]
+    surfaces: Option<Surfaces>,
 }
 
-/// Adapter LUID for the zero-copy decoder, if wgpu runs on DX12 with NV12.
-#[cfg(not(windows))]
-pub fn zero_copy_adapter(_rs: &egui_wgpu::RenderState) -> Option<i64> {
-    None // D3D12 shared textures only; macOS zero-copy (IOSurface) is TODO
+/// macOS: `Some` when wgpu runs on Metal, so VideoToolbox frames can be
+/// sampled in place (the value is unused; Windows passes an adapter LUID).
+#[cfg(target_os = "macos")]
+pub fn zero_copy_adapter(rs: &egui_wgpu::RenderState) -> Option<i64> {
+    crate::surface::TextureCache::new(&rs.device).map(|_| 0)
 }
 
 #[cfg(windows)]
@@ -202,11 +221,14 @@ fn pipeline(rs: &egui_wgpu::RenderState, label: &str, fragment: &str, textures: 
 /// Create the pipelines once and park them in egui-wgpu's callback resources.
 pub fn install(rs: &egui_wgpu::RenderState) {
     let device = &rs.device;
-    let nv12 = rs
-        .device
-        .features()
-        .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
-        .then(|| pipeline(rs, "droidrescue-video-nv12", NV12, 2));
+    // macOS samples the two planes as separate textures, so it needs the
+    // NV12 pipeline but not the NV12 texture format.
+    let nv12 = (cfg!(target_os = "macos")
+        || rs
+            .device
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_NV12))
+    .then(|| pipeline(rs, "droidrescue-video-nv12", NV12, 2));
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("droidrescue-video"),
         mag_filter: wgpu::FilterMode::Linear,
@@ -229,6 +251,11 @@ pub fn install(rs: &egui_wgpu::RenderState) {
         imported: HashMap::new(),
         pool: 0,
         current: Current::None,
+        #[cfg(target_os = "macos")]
+        surfaces: crate::surface::TextureCache::new(device).map(|cache| Surfaces {
+            cache,
+            frames: Default::default(),
+        }),
     });
 }
 
@@ -293,6 +320,14 @@ impl egui_wgpu::CallbackTrait for VideoCallback {
                 (Some(p), Some(bg)) => (&p.pipeline, bg),
                 _ => return,
             },
+            #[cfg(target_os = "macos")]
+            Current::Surface => {
+                let newest = res.surfaces.as_ref().and_then(|s| s.frames.back());
+                match (&res.nv12, newest) {
+                    (Some(p), Some((_, bg))) => (&p.pipeline, bg),
+                    _ => return,
+                }
+            }
             Current::None => return,
         };
         pass.set_pipeline(pipeline);
@@ -351,6 +386,15 @@ fn accept(
             let [sx, sy] = decoder::crop_scale((frame.width, frame.height), *texture_size);
             set_params(queue, res, [0.0, 0.0, sx, sy]);
             res.current = Current::Nv12(*handle);
+        }
+        #[cfg(target_os = "macos")]
+        Picture::Surface { buffer, full_range } => {
+            import_surface(device, res, buffer)?;
+            set_params(
+                queue,
+                res,
+                [if *full_range { 1.0 } else { 0.0 }, 0.0, 1.0, 1.0],
+            );
         }
     }
     Ok(())
@@ -426,17 +470,28 @@ fn import_nv12(
     };
     let y = plane(wgpu::TextureFormat::R8Unorm, wgpu::TextureAspect::Plane0);
     let uv = plane(wgpu::TextureFormat::Rg8Unorm, wgpu::TextureAspect::Plane1);
-    Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
+    Ok(nv12_bind_group(device, res, nv12, &y, &uv))
+}
+
+/// Bind group of the NV12 pipeline: Y (R8) and CbCr (RG8) views.
+fn nv12_bind_group(
+    device: &wgpu::Device,
+    res: &Resources,
+    nv12: &Pipeline,
+    y: &wgpu::TextureView,
+    uv: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("video-nv12"),
         layout: &nv12.layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(&y),
+                resource: wgpu::BindingResource::TextureView(y),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(&uv),
+                resource: wgpu::BindingResource::TextureView(uv),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
@@ -447,7 +502,29 @@ fn import_nv12(
                 resource: res.params.as_entire_binding(),
             },
         ],
-    }))
+    })
+}
+
+/// macOS zero-copy: alias the frame's IOSurface planes as textures.
+#[cfg(target_os = "macos")]
+fn import_surface(
+    device: &wgpu::Device,
+    res: &mut Resources,
+    buffer: &crate::decoder_vt::PixelBuffer,
+) -> Result<(), String> {
+    let nv12 = res.nv12.as_ref().ok_or("缺少 NV12 渲染管线")?;
+    let surfaces = res.surfaces.as_ref().ok_or("渲染设备不是 Metal")?;
+    let imported = surfaces.cache.import(device, buffer)?;
+    let view = |t: &wgpu::Texture| t.create_view(&Default::default());
+    let bind_group = nv12_bind_group(device, res, nv12, &view(&imported.y), &view(&imported.uv));
+    let surfaces = res.surfaces.as_mut().expect("checked above");
+    surfaces.frames.push_back((imported, bind_group));
+    while surfaces.frames.len() > SURFACES_KEPT {
+        surfaces.frames.pop_front();
+    }
+    surfaces.cache.flush();
+    res.current = Current::Surface;
+    Ok(())
 }
 
 fn upload_i420(

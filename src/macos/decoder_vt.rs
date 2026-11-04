@@ -40,11 +40,99 @@ struct OutputCallbackRecord {
     refcon: *mut c_void,
 }
 
+/// Opaque CFDictionary{Key,Value}CallBacks; only their address is used.
+#[repr(C)]
+struct DictCallbacks {
+    _opaque: [u8; 0],
+}
+
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     static kCFAllocatorNull: CfRef;
+    static kCFBooleanTrue: CfRef;
+    static kCFTypeDictionaryKeyCallBacks: DictCallbacks;
+    static kCFTypeDictionaryValueCallBacks: DictCallbacks;
     fn CFRetain(cf: CfRef) -> CfRef;
     fn CFRelease(cf: CfRef);
+    fn CFDictionaryCreate(
+        allocator: CfRef,
+        keys: *const CfRef,
+        values: *const CfRef,
+        count: isize,
+        key_callbacks: *const DictCallbacks,
+        value_callbacks: *const DictCallbacks,
+    ) -> CfRef;
+}
+
+/// CFDictionary with CF-typed keys/values (both retained by the dictionary).
+///
+/// SAFETY (caller): every key and value is a live CF object.
+unsafe fn cf_dictionary(pairs: &[(CfRef, CfRef)]) -> CfRef {
+    let keys: Vec<CfRef> = pairs.iter().map(|p| p.0).collect();
+    let values: Vec<CfRef> = pairs.iter().map(|p| p.1).collect();
+    unsafe {
+        CFDictionaryCreate(
+            std::ptr::null_mut(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            pairs.len() as isize,
+            &raw const kCFTypeDictionaryKeyCallBacks,
+            &raw const kCFTypeDictionaryValueCallBacks,
+        )
+    }
+}
+
+/// Destination attributes for zero-copy: IOSurface-backed and usable as
+/// Metal textures. Caller releases the dictionary.
+fn metal_image_attributes() -> CfRef {
+    // SAFETY: CoreVideo / CoreFoundation constants; the empty dictionary is
+    // retained by the outer one and released here.
+    unsafe {
+        let iosurface_props = cf_dictionary(&[]);
+        let attrs = cf_dictionary(&[
+            (kCVPixelBufferMetalCompatibilityKey, kCFBooleanTrue),
+            (kCVPixelBufferIOSurfacePropertiesKey, iosurface_props),
+        ]);
+        CFRelease(iosurface_props);
+        attrs
+    }
+}
+
+/// A retained CVPixelBuffer (IOSurface-backed NV12) handed to the renderer.
+pub struct PixelBuffer(CfRef);
+
+// SAFETY: CVPixelBuffers are reference-counted and thread-safe to retain,
+// release and read; the renderer only reads.
+unsafe impl Send for PixelBuffer {}
+
+impl PixelBuffer {
+    pub fn as_ptr(&self) -> CfRef {
+        self.0
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        // SAFETY: live buffer.
+        unsafe {
+            (
+                CVPixelBufferGetWidth(self.0) as u32,
+                CVPixelBufferGetHeight(self.0) as u32,
+            )
+        }
+    }
+}
+
+impl Clone for PixelBuffer {
+    fn clone(&self) -> Self {
+        // SAFETY: live buffer; the clone owns one more reference.
+        PixelBuffer(unsafe { CFRetain(self.0) })
+    }
+}
+
+impl Drop for PixelBuffer {
+    fn drop(&mut self) {
+        // SAFETY: we own exactly one reference.
+        unsafe { CFRelease(self.0) }
+    }
 }
 
 #[link(name = "CoreMedia", kind = "framework")]
@@ -83,6 +171,8 @@ unsafe extern "C" {
 
 #[link(name = "CoreVideo", kind = "framework")]
 unsafe extern "C" {
+    static kCVPixelBufferMetalCompatibilityKey: CfRef;
+    static kCVPixelBufferIOSurfacePropertiesKey: CfRef;
     fn CVPixelBufferLockBaseAddress(buffer: CfRef, flags: u64) -> i32;
     fn CVPixelBufferUnlockBaseAddress(buffer: CfRef, flags: u64) -> i32;
     fn CVPixelBufferGetWidth(buffer: CfRef) -> usize;
@@ -168,18 +258,22 @@ pub struct VtDecoder {
     /// on rotation).
     params: Option<(Vec<u8>, Vec<u8>)>,
     outputs: Box<Outputs>,
+    /// Hand IOSurface-backed buffers to the renderer (Metal) instead of
+    /// reading them back to the CPU.
+    zero_copy: bool,
 }
 
 // SAFETY: the CF objects are only used from the thread that owns the decoder.
 unsafe impl Send for VtDecoder {}
 
 impl VtDecoder {
-    pub fn new() -> VtDecoder {
+    pub fn new(zero_copy: bool) -> VtDecoder {
         VtDecoder {
             session: std::ptr::null_mut(),
             format: std::ptr::null_mut(),
             params: None,
             outputs: Box::default(),
+            zero_copy,
         }
     }
 
@@ -219,15 +313,24 @@ impl VtDecoder {
                 callback: on_output,
                 refcon: (&raw const *self.outputs).cast_mut().cast(),
             };
-            // No image attributes: the decoder's native NV12 (IOSurface-backed).
+            // The decoder's native NV12; for zero-copy also Metal-compatible
+            // IOSurfaces.
+            let attributes = if self.zero_copy {
+                metal_image_attributes()
+            } else {
+                std::ptr::null_mut()
+            };
             let status = VTDecompressionSessionCreate(
                 std::ptr::null_mut(),
                 self.format,
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
+                attributes,
                 &record,
                 &mut self.session,
             );
+            if !attributes.is_null() {
+                CFRelease(attributes);
+            }
             if status != 0 {
                 self.session = std::ptr::null_mut();
                 return Err(format!("无法创建 VideoToolbox 解码会话 ({status})"));
@@ -293,22 +396,33 @@ impl VtDecoder {
     }
 }
 
+/// Full range for `'420f'`, limited for `'420v'`; anything else is not NV12.
+fn nv12_full_range(format: u32) -> Result<bool, String> {
+    match format {
+        NV12_VIDEO => Ok(false),
+        NV12_FULL => Ok(true),
+        other => Err(format!(
+            "不支持的像素格式 {:?}",
+            String::from_utf8_lossy(&other.to_be_bytes())
+        )),
+    }
+}
+
+/// Zero-copy: hand the IOSurface-backed buffer itself to the renderer.
+///
+/// SAFETY (caller): `buffer` wraps a live CVPixelBuffer.
+unsafe fn surface(buffer: PixelBuffer) -> Result<(u32, u32, Picture), String> {
+    let full_range = nv12_full_range(unsafe { CVPixelBufferGetPixelFormatType(buffer.as_ptr()) })?;
+    let (width, height) = buffer.size();
+    Ok((width, height, Picture::Surface { buffer, full_range }))
+}
+
 /// Copy an NV12 pixel buffer into planar Y / U / V.
 ///
 /// SAFETY (caller): `image` is a live CVPixelBuffer.
 unsafe fn read_nv12(image: CfRef) -> Result<(u32, u32, Picture), String> {
     unsafe {
-        let format = CVPixelBufferGetPixelFormatType(image);
-        let full_range = match format {
-            NV12_VIDEO => false,
-            NV12_FULL => true,
-            other => {
-                return Err(format!(
-                    "不支持的像素格式 {:?}",
-                    String::from_utf8_lossy(&other.to_be_bytes())
-                ));
-            }
-        };
+        let full_range = nv12_full_range(CVPixelBufferGetPixelFormatType(image))?;
         if CVPixelBufferLockBaseAddress(image, LOCK_READ_ONLY) != 0 {
             return Err("无法读取解码画面".into());
         }
@@ -362,7 +476,11 @@ fn split_nv12(
 
 impl Decoder for VtDecoder {
     fn name(&self) -> &'static str {
-        "VideoToolbox"
+        if self.zero_copy {
+            "VideoToolbox → Metal (zero-copy)"
+        } else {
+            "VideoToolbox (CPU upload)"
+        }
     }
 
     fn decode(
@@ -392,9 +510,15 @@ impl Decoder for VtDecoder {
         for output in outputs {
             match output {
                 Ok(image) => {
-                    // SAFETY: retained by the callback; released once here.
-                    let picture = unsafe { read_nv12(image) };
-                    unsafe { CFRelease(image) };
+                    // SAFETY: retained by the callback; the reference moves
+                    // into a PixelBuffer (zero-copy) or is released here.
+                    let picture = if self.zero_copy {
+                        unsafe { surface(PixelBuffer(image)) }
+                    } else {
+                        let picture = unsafe { read_nv12(image) };
+                        unsafe { CFRelease(image) };
+                        picture
+                    };
                     match picture {
                         Ok((width, height, picture)) => on_frame(Frame {
                             width,
@@ -427,7 +551,7 @@ impl Drop for VtDecoder {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -447,22 +571,26 @@ mod tests {
         assert_eq!(out, [0, 0, 0, 3, 0x65, 1, 2, 0, 0, 0, 1, 0x41]);
     }
 
-    /// Real decode of a generated 320×240 test stream (3 frames, scrcpy-like:
-    /// SPS + PPS ride with the first access unit).
-    #[test]
-    fn decodes_a_real_h264_stream() {
+    /// The fixture as scrcpy sends it: SPS + PPS ride with the first access
+    /// unit, one slice per frame.
+    fn fixture_units() -> Vec<Vec<u8>> {
         let stream = include_bytes!("../../tests/fixtures/testsrc-320x240.h264");
-        let nals = annexb_nals(stream);
         let mut units: Vec<Vec<u8>> = Vec::new();
         let mut pending: Vec<u8> = Vec::new();
-        for nal in nals {
+        for nal in annexb_nals(stream) {
             pending.extend_from_slice(&[0, 0, 0, 1]);
             pending.extend_from_slice(nal);
             if matches!(nal_type(nal), 1 | 5) {
-                units.push(std::mem::take(&mut pending)); // one slice per frame
+                units.push(std::mem::take(&mut pending));
             }
         }
-        let mut decoder = VtDecoder::new();
+        units
+    }
+
+    /// Decode the 320×240, 3-frame fixture.
+    pub fn decode_fixture(zero_copy: bool) -> Vec<Frame> {
+        let units = fixture_units();
+        let mut decoder = VtDecoder::new(zero_copy);
         let mut frames = Vec::new();
         for unit in &units {
             decoder
@@ -470,6 +598,12 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(frames.len(), units.len());
+        frames
+    }
+
+    #[test]
+    fn decodes_a_real_h264_stream() {
+        let frames = decode_fixture(false);
         assert_eq!(frames.len(), 3);
         let f = &frames[0];
         assert_eq!((f.width, f.height), (320, 240));
@@ -484,5 +618,14 @@ mod tests {
             planes[0].iter().max().unwrap(),
         );
         assert!(max - min > 100, "luma range {min}..{max}");
+    }
+
+    #[test]
+    fn zero_copy_hands_over_iosurface_buffers() {
+        let frames = decode_fixture(true);
+        let Picture::Surface { buffer, .. } = &frames[0].picture else {
+            panic!("surface picture expected");
+        };
+        assert_eq!(buffer.size(), (320, 240));
     }
 }

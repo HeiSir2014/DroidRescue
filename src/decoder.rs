@@ -55,6 +55,13 @@ pub enum Picture {
         pool: u64,
         texture_size: (u32, u32),
     },
+    /// NV12 in an IOSurface-backed CVPixelBuffer from VideoToolbox, sampled
+    /// in place by Metal (macOS zero-copy).
+    #[cfg(target_os = "macos")]
+    Surface {
+        buffer: crate::decoder_vt::PixelBuffer,
+        full_range: bool,
+    },
 }
 
 /// One decoded picture.

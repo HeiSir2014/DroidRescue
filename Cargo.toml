@@ -37,6 +37,10 @@ nusb = "0.2.9"
 # Lock-screen PINs: AES-256-GCM with a key kept in the login Keychain.
 security-framework = "3.7.0"
 aes-gcm = "0.11.1"
+# Zero-copy video: wrap CVMetalTexture planes for wgpu's Metal hal (same
+# versions as wgpu-hal, so the types are wgpu's own).
+objc2 = "0.6.3"
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLResource", "MTLTexture"] }
 
 # Smallest/fastest shipping binary: whole-program LTO, one codegen unit, no
 # debug symbols in the exe (the PDB is still written next to it).
