@@ -187,7 +187,10 @@ fn e2e_mirror_session_streams_and_controls() {
         let lines = lines.clone();
         Arc::new(move |l| lines.lock().unwrap().push(l))
     };
-    sh(&tools, &serial, "input keyevent 224"); // WAKEUP: keep frames coming
+    // Awake and past a (non-secure) keyguard: frames keep coming and an
+    // activity started below can take focus.
+    sh(&tools, &serial, "input keyevent 224");
+    sh(&tools, &serial, "wm dismiss-keyguard");
     let session = mirror::Session::start(&tools, Some(&serial), &opts, None, log, Arc::new(|| {}))
         .unwrap_or_else(|e| panic!("start: {e}; log: {:?}", lines.lock().unwrap()));
     let port_line = |list: &str| list.contains("localabstract:scrcpy_");
