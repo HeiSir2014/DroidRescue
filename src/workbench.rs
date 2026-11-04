@@ -53,8 +53,9 @@ pub struct Context<'a> {
     pub profiles: &'a [Profile],
     /// The profile in effect (救援 tab's choice / automatic).
     pub current: Option<&'a Profile>,
-    /// Lock-screen password for `{pw}` (never shown).
-    pub password: Option<String>,
+    /// Lock-screen password for `{pw}` (never shown). Looked up only when
+    /// a script runs: it may decrypt a stored PIN (DPAPI / Keychain).
+    pub password: &'a dyn Fn() -> Option<String>,
     /// adb model of the selected device, to prefill a new profile.
     pub adb_model: Option<&'a str>,
 }
@@ -454,8 +455,9 @@ impl Workbench {
         fresh: bool,
         actions: &mut Vec<Action>,
     ) {
-        let pw = match (&cx.password, self.text.contains("{pw}")) {
-            (Some(pw), _) => pw.clone(),
+        let needs_pw = self.text.contains("{pw}");
+        let pw = match (needs_pw.then(|| (cx.password)()).flatten(), needs_pw) {
+            (Some(pw), _) => pw,
             (None, false) => String::new(),
             (None, true) => {
                 actions.push(Action::Log(

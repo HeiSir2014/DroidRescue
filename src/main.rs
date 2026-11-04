@@ -206,6 +206,33 @@ fn app_icon() -> egui::IconData {
         .expect("embedded icon is a valid PNG")
 }
 
+/// Password for a blind unlock: typed > saved for this device (held /
+/// plugged-in USB serial, adb device) > the only saved password. May
+/// decrypt (DPAPI / Keychain): call when needed, not every frame.
+fn rescue_password_for(
+    typed: &str,
+    store: &secrets::PasswordStore,
+    snap: &Snapshot,
+    usb_serial: Option<&str>,
+) -> Option<String> {
+    if !typed.is_empty() {
+        return Some(typed.to_string());
+    }
+    let plugged = match snap.usb_serials.as_slice() {
+        [one] => Some(one.as_str()),
+        _ => None,
+    };
+    [
+        usb_serial,
+        plugged,
+        snap.device_id.as_deref(),
+        store.only_id().as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|id| store.get(id).ok().flatten())
+}
+
 /// Window decorations. Windows: none — egui paints the caption and frame,
 /// chrome.rs hit-tests them natively. macOS: the standard native window
 /// (title bar with the app name and traffic lights; its light/dark follows
@@ -1144,25 +1171,9 @@ impl PadApp {
         }
     }
 
-    /// Password for a blind unlock: typed in 04 > saved for this device (held
-    /// / plugged-in USB serial, adb device) > the only saved password.
+    /// See [`rescue_password_for`].
     fn rescue_password(&self, snap: &Snapshot, usb_serial: Option<&str>) -> Option<String> {
-        if !self.password.is_empty() {
-            return Some(self.password.clone());
-        }
-        let plugged = match snap.usb_serials.as_slice() {
-            [one] => Some(one.as_str()),
-            _ => None,
-        };
-        [
-            usb_serial,
-            plugged,
-            snap.device_id.as_deref(),
-            self.passwords.only_id().as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|id| self.passwords.get(id).ok().flatten())
+        rescue_password_for(&self.password, &self.passwords, snap, usb_serial)
     }
 
     /// Keyboard passthrough: this frame's typing → HID keyboard on the tablet.

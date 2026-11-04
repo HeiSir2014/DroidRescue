@@ -209,14 +209,24 @@ mod keychain {
     }
 
     /// The Keychain-held key, created on first use.
+    /// `errSecItemNotFound`: no key yet.
+    const ITEM_NOT_FOUND: i32 = -25300;
+
+    /// Only a missing key is created. Any other failure (access denied
+    /// after an update, locked keychain) is an error: replacing the key
+    /// would make every saved PIN undecryptable for good.
     pub fn keychain_key() -> io::Result<Vec<u8>> {
         match get_generic_password(SERVICE, ACCOUNT) {
             Ok(key) if key.len() == 32 => Ok(key),
-            _ => {
+            Ok(_) => Err(other("钥匙串中的密钥格式不对")),
+            Err(e) if e.code() == ITEM_NOT_FOUND => {
                 let key = random::<32>()?;
                 set_generic_password(SERVICE, ACCOUNT, &key).map_err(other)?;
                 Ok(key.to_vec())
             }
+            Err(e) => Err(other(format!(
+                "无法读取钥匙串中的密钥（已拒绝访问？）: {e}"
+            ))),
         }
     }
 
