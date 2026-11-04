@@ -117,8 +117,14 @@ pub fn key(ui: &mut Ui, glyph: &str, label: &str, size: Vec2, enabled: bool) -> 
     // Glyph over caption, centred together by their real heights (fonts
     // differ per platform, fixed offsets overlapped).
     let label_color = if enabled { c.text_dim } else { c.text_faint };
-    let glyph = p.layout_no_wrap(glyph.to_string(), theme::mono(16.0), fg);
-    let label = p.layout_no_wrap(label.to_string(), theme::ui(10.0), label_color);
+    // A lone symbol (◁ ○ ▢) has a small ink box: set it larger than words.
+    let glyph_size = if glyph.chars().count() == 1 {
+        20.0
+    } else {
+        15.0
+    };
+    let glyph = p.layout_no_wrap(glyph.to_string(), theme::mono(glyph_size), fg);
+    let label = p.layout_no_wrap(label.to_string(), theme::ui(11.0), label_color);
     let gap = -1.0; // line boxes carry their own leading
     let top = rect.center().y - (glyph.size().y + gap + label.size().y) / 2.0;
     let centred = |w: f32| rect.center().x - w / 2.0;

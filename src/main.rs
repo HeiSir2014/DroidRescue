@@ -68,6 +68,8 @@ use std::time::{Duration, Instant};
 use widgets::CaptionIcon;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Widest a page's content grows (pt); wider windows centre it.
+const MAX_PAGE_W: f32 = 1200.0;
 const MAX_LOG_LINES: usize = 500;
 /// Our own caption (title bar) height — Windows only. macOS uses the native
 /// title bar: content drawn under a transparent one gets partly covered by
@@ -643,6 +645,21 @@ impl PadApp {
 
     /// The current page (everything except the mirror view).
     fn page_content(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        // Readable line lengths and cards that stay together on wide or
+        // maximised windows: content is capped and centred (the mirror uses
+        // all the room it gets).
+        let full = ui.max_rect();
+        if self.page != nav::Page::Mirror && full.width() > MAX_PAGE_W {
+            let rect = Rect::from_center_size(full.center(), vec2(MAX_PAGE_W, full.height()));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                self.page_by_kind(ui, snap)
+            });
+        } else {
+            self.page_by_kind(ui, snap);
+        }
+    }
+
+    fn page_by_kind(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         match self.page {
             nav::Page::Home => self.home_page(ui, snap),
             nav::Page::Mirror => self.mirror_page(ui, snap),
