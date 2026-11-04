@@ -321,7 +321,9 @@ pub fn link(ui: &mut Ui, text: &str) -> Response {
 pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str)]) -> bool {
     let c = theme::c();
     let gap = 4.0;
-    let w = (ui.available_width() - gap * (options.len() as f32 - 1.0)) / options.len() as f32;
+    // Never negative: a window mid-resize can momentarily have no room.
+    let w = ((ui.available_width() - gap * (options.len() as f32 - 1.0)) / options.len() as f32)
+        .max(0.0);
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = gap;

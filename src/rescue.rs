@@ -154,8 +154,10 @@ pub const COMMANDS: &[CommandDoc] = &[
 
 pub const SCRIPT_WAKE: &str = "wake; pause";
 /// Wake → swipe the keyguard up → PIN → Enter.
-pub const SCRIPT_UNLOCK: &str =
-    "wake; wait:500; swipe:0,-700; wait:700; text:{pw}; enter; wait:800";
+pub const SCRIPT_UNLOCK: &str = "\
+wake; wait:500
+swipe:0,-700; wait:700
+text:{pw}; enter; wait:800";
 
 /// Full rescue, verified on the Pad3 (landscape) 2026-11-04 — screen and
 /// USB debugging both unavailable at the start. Positions are fractions of
@@ -166,13 +168,19 @@ pub const SCRIPT_UNLOCK: &str =
 ///     needs to run on the PC (verified by the user 2026-11-04)
 ///  3. dismiss vivo's informational "需打开电脑的 vivo 办公套件" notice (知道了)
 ///  4. "允许 USB 调试吗？": tick 一律允许, tap 允许
+///
+/// One action per line, so the script editor can single-step it (the 说明
+/// tab annotates each line: `guide::PAD3_ANNOTATED`).
 pub const SCRIPT_ENABLE_DEBUGGING: &str = "\
-    wake; wait:500; swipe:0,-700; wait:700; text:{pw}; enter; wait:2500; \
-    rot:1; click:0.41,0.61; wait:500; \
-    reconnect:20000; wait:1500; \
-    click:0.5,0.582; wait:800; \
-    click:0.3625,0.525; wait:400; \
-    click:0.5,0.601; wait:600";
+wake; wait:500
+swipe:0,-700; wait:700
+text:{pw}; enter; wait:2500
+rot:1
+click:0.41,0.61; wait:500
+reconnect:20000; wait:1500
+click:0.5,0.582; wait:800
+click:0.3625,0.525; wait:400
+click:0.5,0.601; wait:600";
 
 const MOD_CTRL: u8 = 0x01;
 const MOD_ALT: u8 = 0x04;
@@ -379,7 +387,7 @@ fn start_rotation(fresh: bool, held: u8) -> u8 {
 }
 
 /// Default display rotation for pen taps (1 = landscape, the Pad3's).
-const DEFAULT_ROTATION: u8 = 1;
+pub const DEFAULT_ROTATION: u8 = 1;
 
 /// How a blind unlock reaches the device.
 #[derive(Debug, PartialEq, Eq)]
@@ -462,7 +470,10 @@ fn cancelled(stop: &AtomicU64, epoch: u64) -> bool {
 impl Rescue {
     pub fn spawn(log: LogFn) -> Rescue {
         let (tx, rx) = mpsc::channel();
-        let status = Arc::new(Mutex::new(Status::default()));
+        let status = Arc::new(Mutex::new(Status {
+            rotation: DEFAULT_ROTATION,
+            ..Status::default()
+        }));
         let targets = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicU64::new(0));
         let shared = Worker {

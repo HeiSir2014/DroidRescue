@@ -18,6 +18,7 @@ mod decoder_mf;
 #[path = "macos/decoder_vt.rs"]
 mod decoder_vt;
 mod geometry;
+mod guide;
 mod input;
 mod mirror;
 mod profiles;
@@ -43,6 +44,7 @@ mod video;
 mod widgets;
 #[cfg(windows)]
 mod winusb;
+mod workbench;
 #[cfg(windows)]
 use winusb as usbhost;
 
@@ -67,16 +69,49 @@ const CAPTION_H: f32 = 40.0;
 const RESIZE_BORDER: f32 = 6.0;
 /// Control rail width (logical px).
 const RAIL_W: f32 = 320.0;
-const DEFAULT_SIZE: [f32; 2] = [340.0, 800.0];
-/// The rail is laid out for `RAIL_W`; narrower windows clipped its widgets.
-const MIN_SIZE: [f32; 2] = [RAIL_W, 520.0];
+/// First-launch window: rail + a comfortable workspace.
+const DEFAULT_SIZE: [f32; 2] = [1080.0, 760.0];
 /// While mirroring, the stage keeps at least this much beside the rail.
 const MIN_STAGE_W: f32 = 200.0;
+/// When not mirroring, the workspace (rescue / script editor / guide)
+/// needs at least this much beside the rail.
+const MIN_WORKSPACE_W: f32 = 460.0;
+const MIN_HEIGHT: f32 = 560.0;
+const _: () = assert!(DEFAULT_SIZE[1] >= MIN_HEIGHT && DEFAULT_SIZE[0] >= RAIL_W + MIN_WORKSPACE_W);
 
-/// Smallest window that shows the whole rail (and a usable stage).
+/// Smallest window: the whole rail (laid out for `RAIL_W`) plus a usable
+/// stage (mirroring) or workspace (idle).
 fn min_window_size(mirroring: bool) -> egui::Vec2 {
-    let stage = if mirroring { MIN_STAGE_W } else { 0.0 };
-    vec2(MIN_SIZE[0] + stage, MIN_SIZE[1])
+    let beside = if mirroring {
+        MIN_STAGE_W
+    } else {
+        MIN_WORKSPACE_W
+    };
+    vec2(RAIL_W + beside, MIN_HEIGHT)
+}
+
+/// Frames to ignore the window size after asking for a resize (it lands a
+/// frame or two later), so a transient size is not taken as the user's.
+const RESIZE_SETTLE_FRAMES: u8 = 6;
+
+/// Split the window body into (stage or workspace, rail).
+fn split_body(body: Rect, rail_side: Side) -> (Rect, Rect) {
+    match rail_side {
+        Side::Right => {
+            let rail = Rect::from_min_max(pos2(body.right() - RAIL_W, body.top()), body.max);
+            (
+                Rect::from_min_max(body.min, pos2(rail.left(), body.bottom())),
+                rail,
+            )
+        }
+        Side::Left => {
+            let rail = Rect::from_min_max(body.min, pos2(body.left() + RAIL_W, body.bottom()));
+            (
+                Rect::from_min_max(pos2(rail.right(), body.top()), body.max),
+                rail,
+            )
+        }
+    }
 }
 const KEY_HOME: u32 = 3;
 /// Resize frame (old layout) + surface reconfigure + first correct present.
@@ -425,7 +460,6 @@ struct PadApp {
     rescue_text: String,
     /// Forward this PC's keyboard to the tablet as a USB keyboard.
     rescue_passthrough: bool,
-    rescue_script_text: String,
     /// Rescue profiles (built-in + user file) and the user's explicit pick
     /// (None = automatic by model).
     profiles: Vec<profiles::Profile>,
@@ -434,6 +468,25 @@ struct PadApp {
     known_models: profiles::KnownModels,
     /// Last 设备体检 scan (taken on demand, not every frame).
     checkup: Option<Vec<checkup::Row>>,
+    /// Workspace tab shown when not mirroring.
+    tab: Tab,
+    workbench: workbench::Workbench,
+    /// Window width when not mirroring (the user's choice), restored after
+    /// mirroring ends.
+    idle_width: f32,
+    /// The window has been checked against the idle minimum once (older
+    /// versions saved a one-column 340 px window).
+    sized_once: bool,
+    /// Frames left before the window size is trusted again after a resize.
+    settle: u8,
+}
+
+/// Workspace tabs (when not mirroring).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Rescue,
+    Script,
+    Guide,
 }
 
 impl PadApp {
@@ -504,11 +557,86 @@ impl PadApp {
             },
             rescue_text: String::new(),
             rescue_passthrough: false,
-            rescue_script_text: String::new(),
             profiles: profile_list,
             checkup: None,
             profile_choice: None,
             known_models: profiles::KnownModels::load(profiles::known_models_path()),
+            tab: cc
+                .storage
+                .and_then(|s| s.get_string(TAB_KEY))
+                .map_or(Tab::Rescue, |k| Tab::from_key(&k)),
+            workbench: workbench::Workbench::default(),
+            idle_width: DEFAULT_SIZE[0],
+            sized_once: false,
+            settle: 0,
+        }
+    }
+
+    /// The workspace when not mirroring: tabs 救援 · 脚本 · 说明.
+    fn workspace(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        let tabs_w = ui.available_width().min(420.0);
+        ui.allocate_ui(vec2(tabs_w, 28.0), |ui| {
+            widgets::segmented(
+                ui,
+                &mut self.tab,
+                &[
+                    (Tab::Rescue, "救援"),
+                    (Tab::Script, "脚本调试"),
+                    (Tab::Guide, "脚本说明"),
+                ],
+            );
+        });
+        ui.add_space(6.0);
+        match self.tab {
+            Tab::Rescue => self.rescue_tab(ui, snap),
+            Tab::Script => self.script_tab(ui, snap),
+            Tab::Guide => {
+                if let Some(guide::Action::Insert(text)) = guide::ui(ui) {
+                    self.workbench.insert(text);
+                    self.tab = Tab::Script;
+                }
+            }
+        }
+    }
+
+    fn script_tab(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        let status = self.rescue.status.lock().unwrap().clone();
+        let password = self.rescue_password(snap, status.serial.as_deref());
+        let current = self.profile(snap).cloned();
+        let cx = workbench::Context {
+            rescue: &self.rescue,
+            status: &status,
+            profiles: &self.profiles,
+            current: current.as_ref(),
+            password,
+            adb_model: snap.selected_model(),
+        };
+        let actions = self.workbench.ui(ui, &cx);
+        for action in actions {
+            match action {
+                workbench::Action::Save(profile) => self.save_profile(&profile),
+                workbench::Action::Log(line) => log(&self.shared, line),
+                workbench::Action::OpenGuide => self.tab = Tab::Guide,
+            }
+        }
+    }
+
+    /// Write one profile into rescue-profiles.txt and reload everything.
+    fn save_profile(&mut self, profile: &profiles::Profile) {
+        let path = profiles::path();
+        match profiles::save(&path, profile) {
+            Ok(()) => {
+                self.reload_profiles();
+                self.workbench.mark_saved(profile);
+                log(
+                    &self.shared,
+                    format!("✔ 已保存机型「{}」到 {}", profile.name, path.display()),
+                );
+            }
+            Err(e) => log(
+                &self.shared,
+                format!("✘ 保存机型配置失败 {}: {e}", path.display()),
+            ),
         }
     }
 
@@ -932,7 +1060,7 @@ impl PadApp {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
                 }
             }
-            if self.mirroring() && button(ui, CaptionIcon::Swap, "控制栏换边").clicked() {
+            if button(ui, CaptionIcon::Swap, "控制栏换边").clicked() {
                 self.side = self.side.flipped();
             }
         });
@@ -1308,11 +1436,8 @@ impl PadApp {
             );
         });
 
-        // 06 RESCUE
-        self.rescue_section(ui, snap);
-
-        // 07 LOG
-        widgets::section(ui, "07", "LOG", "日志");
+        // 06 LOG (rescue, scripts and the guide live in the workspace tabs)
+        widgets::section(ui, "06", "LOG", "日志");
         egui::Frame::NONE
             .fill(theme::c().well)
             .stroke(egui::Stroke::new(1.0, theme::c().line))
@@ -1339,12 +1464,27 @@ impl PadApp {
         ui.add_space(8.0);
     }
 
-    /// Rescue mode: drive the tablet as a USB keyboard / pen (AOA HID) —
-    /// works with USB debugging off, on the lock screen, with no screen.
-    fn rescue_section(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
-        widgets::section(ui, "06", "RESCUE", "救援 · 无需屏幕和调试");
-        let gap = ui.spacing().item_spacing.x;
+    /// 救援 tab: drive the device as a USB keyboard / pen (AOA HID) — works
+    /// with USB debugging off, on the lock screen, with no screen. Actions
+    /// on the left, what the PC sees of the device on the right.
+    fn rescue_tab(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         let status = self.rescue.status.lock().unwrap().clone();
+        egui::ScrollArea::vertical()
+            .id_salt("rescue-tab")
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                ui.columns(2, |cols| {
+                    cols[0].spacing_mut().item_spacing.y = 8.0;
+                    cols[1].spacing_mut().item_spacing.y = 8.0;
+                    self.rescue_actions(&mut cols[0], snap, &status);
+                    self.rescue_device(&mut cols[1], snap, &status);
+                });
+            });
+    }
+
+    fn rescue_actions(&mut self, ui: &mut egui::Ui, snap: &Snapshot, status: &rescue::Status) {
+        widgets::section(ui, "R1", "RESCUE", "救援 · 无需屏幕和调试");
+        let gap = ui.spacing().item_spacing.x;
         let (text, color) = match (&status.device, status.busy) {
             (Some(d), true) => (format!("● {d} · 执行中…"), theme::c().amber),
             (Some(d), false) => (format!("● {d}"), theme::c().green),
@@ -1420,15 +1560,13 @@ impl PadApp {
             }
         });
 
-        egui::CollapsingHeader::new(RichText::new("高级").color(theme::c().text_dim))
-            .id_salt("rescue-advanced")
-            .show(ui, |ui| {
-                self.rescue_advanced(ui, snap, &status);
-            });
+        self.rescue_manual(ui, status);
     }
 
-    fn rescue_advanced(&mut self, ui: &mut egui::Ui, snap: &Snapshot, status: &rescue::Status) {
+    /// Keys, text and keyboard passthrough by hand.
+    fn rescue_manual(&mut self, ui: &mut egui::Ui, status: &rescue::Status) {
         use rescue::Step;
+        widgets::section(ui, "R2", "MANUAL", "手动操作");
         let gap = ui.spacing().item_spacing.x;
         let w4 = (ui.available_width() - gap * 3.0) / 4.0;
         let nav: [[(&str, &str, Step); 4]; 2] = [
@@ -1485,27 +1623,19 @@ impl PadApp {
             &mut self.rescue_passthrough,
             "键盘直通（电脑键盘 → 平板）",
         );
+    }
 
-        // Workflow script — for adapting to other vivo dialogs / layouts.
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.rescue_script_text)
-                    .font(theme::mono(11.0))
-                    .hint_text("脚本，如 wake; click:0.5,0.6")
-                    .desired_width(ui.available_width() - 72.0 - gap)
-                    .margin(Margin::symmetric(8, 6)),
-            );
-            if widgets::key(ui, "RUN", "运行", vec2(72.0, 34.0), !self.rescue_script_text.trim().is_empty())
-                .on_hover_text("click:x,y（笔点按，屏幕比例）· move:x,y（笔悬停不点，配合开发者选项「指针位置」对准坐标）· drag:x1,y1,x2,y2[,ms]（按住拖动；起止相同=长按）· rot:0~3 · wait:ms · text:abc · enter · home · back · {pw}")
-                .clicked()
-            {
-                let script = self.rescue_script_text.clone();
-                let pw = self.rescue_password(snap, status.serial.as_deref()).unwrap_or_default();
-                self.rescue_script("脚本", &script, &[("pw", &pw)]);
-            }
-        });
-        ui.horizontal(|ui| {
-            if widgets::link(ui, "编辑机型配置")
+    /// Device side: profile file, driver setup, 设备体检.
+    fn rescue_device(&mut self, ui: &mut egui::Ui, snap: &Snapshot, status: &rescue::Status) {
+        widgets::section(ui, "R3", "DEVICE", "设备与机型配置");
+        if ui
+            .button(RichText::new("编写 / 调试此机型的救援脚本 →").color(theme::c().amber))
+            .clicked()
+        {
+            self.tab = Tab::Script;
+        }
+        ui.horizontal_wrapped(|ui| {
+            if widgets::link(ui, "用文本编辑器打开配置文件")
                 .on_hover_text(profiles::path().display().to_string())
                 .clicked()
                 && let Err(e) = open_in_text_editor(&profiles::path())
@@ -1524,9 +1654,8 @@ impl PadApp {
             }
         });
         self.winusb_setup_link(ui);
-        egui::CollapsingHeader::new(RichText::new("设备体检").color(theme::c().text_dim))
-            .id_salt("rescue-checkup")
-            .show(ui, |ui| self.checkup_view(ui, snap));
+        widgets::section(ui, "R4", "CHECKUP", "设备体检");
+        self.checkup_view(ui, snap);
     }
 
     /// USB functions as Windows sees them, and whether the rescue can use them.
@@ -1659,9 +1788,38 @@ impl PadApp {
         self.set_width(ctx, inner_h * extent.x / extent.y + 16.0 + RAIL_W);
     }
 
+    /// Remember the user's window width while not mirroring (to restore it
+    /// after mirroring), and widen a window saved by the old one-column
+    /// layout once.
+    fn track_idle_width(
+        &mut self,
+        ctx: &egui::Context,
+        mirroring: bool,
+        maximized: bool,
+        inner: Option<Rect>,
+    ) {
+        if self.settle > 0 {
+            self.settle -= 1;
+            return;
+        }
+        let Some(inner) = inner else { return };
+        if mirroring || maximized || self.uncloak_in > 0 {
+            return;
+        }
+        if !self.sized_once {
+            self.sized_once = true;
+            if inner.width() + 0.5 < min_window_size(false).x {
+                self.set_width(ctx, DEFAULT_SIZE[0]);
+                return;
+            }
+        }
+        self.idle_width = inner.width();
+    }
+
     /// Resize horizontally without moving the rail on screen (the stage opens
     /// or closes on the far side) — no jump under the user's cursor.
     fn set_width(&mut self, ctx: &egui::Context, width: f32) {
+        self.settle = RESIZE_SETTLE_FRAMES;
         if self.hwnd != 0 {
             let px = (width * ctx.pixels_per_point()).round() as i32;
             // Cloak across the resize: the swapchain still holds the old-size
@@ -1924,17 +2082,19 @@ impl eframe::App for PadApp {
             let extent = model.extent(skin::turns_for(&model, snap.orientation, None));
             self.fit_window(&ctx, self.last_extent.unwrap_or(extent));
         } else if !mirroring && self.was_mirroring {
-            self.set_width(&ctx, DEFAULT_SIZE[0]);
+            self.set_width(&ctx, self.idle_width);
             self.last_extent = None;
         }
         self.was_mirroring = mirroring;
 
-        let (maximized, focused) = ctx.input(|i| {
+        let (maximized, focused, inner) = ctx.input(|i| {
             (
                 i.viewport().maximized.unwrap_or(false),
                 i.viewport().focused.unwrap_or(true),
+                i.viewport().inner_rect,
             )
         });
+        self.track_idle_width(&ctx, mirroring, maximized, inner);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::c().bg))
@@ -1951,50 +2111,44 @@ impl eframe::App for PadApp {
                 });
 
                 let body = ui.available_rect_before_wrap();
-                let rail_rect = if mirroring {
-                    let (stage, rail) = match self.side {
-                        Side::Right => {
-                            let rail = Rect::from_min_max(
-                                pos2(body.right() - RAIL_W, body.top()),
-                                body.max,
-                            );
-                            (
-                                Rect::from_min_max(body.min, pos2(rail.left(), body.bottom())),
-                                rail,
-                            )
-                        }
-                        Side::Left => {
-                            let rail = Rect::from_min_max(
-                                body.min,
-                                pos2(body.left() + RAIL_W, body.bottom()),
-                            );
-                            (
-                                Rect::from_min_max(pos2(rail.right(), body.top()), body.max),
-                                rail,
-                            )
-                        }
-                    };
+                let (work, rail_rect) = split_body(body, self.side);
+                if mirroring {
                     let before = self.last_extent;
-                    self.stage(ui, stage, &snap);
+                    self.stage(ui, work, &snap);
                     if let Some(extent) = self.last_extent
                         && before.is_some()
                         && before != self.last_extent
                     {
                         self.fit_window(&ctx, extent);
                     }
-                    let edge_x = if self.side == Side::Right {
-                        rail.left()
-                    } else {
-                        rail.right()
-                    };
-                    ui.painter().line_segment(
-                        [pos2(edge_x, rail.top()), pos2(edge_x, rail.bottom())],
-                        egui::Stroke::new(1.0, theme::c().line),
-                    );
-                    rail
+                } else if work.width() >= MIN_WORKSPACE_W / 2.0 {
+                    // (Narrower only for the frames until an old one-column
+                    // window has been widened.)
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(work), |ui| {
+                        // Whatever a tab lays out, it never paints over the rail.
+                        ui.set_clip_rect(work);
+                        egui::Frame::NONE
+                            .fill(theme::c().bg)
+                            .inner_margin(Margin::symmetric(16, 12))
+                            .show(ui, |ui| {
+                                ui.set_min_size(ui.available_size());
+                                ui.spacing_mut().item_spacing.y = 8.0;
+                                self.workspace(ui, &snap);
+                            });
+                    });
+                }
+                let edge_x = if self.side == Side::Right {
+                    rail_rect.left()
                 } else {
-                    body
+                    rail_rect.right()
                 };
+                ui.painter().line_segment(
+                    [
+                        pos2(edge_x, rail_rect.top()),
+                        pos2(edge_x, rail_rect.bottom()),
+                    ],
+                    egui::Stroke::new(1.0, theme::c().line),
+                );
 
                 ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
                     egui::ScrollArea::vertical()
@@ -2016,8 +2170,33 @@ impl eframe::App for PadApp {
             });
     }
 
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(TAB_KEY, self.tab.key().to_string());
+    }
+
     fn on_exit(&mut self) {
         self.stop_mirror();
+    }
+}
+
+/// eframe storage key of the last workspace tab.
+const TAB_KEY: &str = "workspace-tab";
+
+impl Tab {
+    fn key(self) -> &'static str {
+        match self {
+            Tab::Rescue => "rescue",
+            Tab::Script => "script",
+            Tab::Guide => "guide",
+        }
+    }
+
+    fn from_key(key: &str) -> Tab {
+        match key {
+            "script" => Tab::Script,
+            "guide" => Tab::Guide,
+            _ => Tab::Rescue,
+        }
     }
 }
 
@@ -2069,7 +2248,7 @@ fn main() -> eframe::Result {
                 .with_title(APP_TITLE)
                 .with_icon(app_icon())
                 .with_inner_size(DEFAULT_SIZE)
-                .with_min_inner_size(MIN_SIZE),
+                .with_min_inner_size(min_window_size(false)),
         ),
         // Remember position/size across launches; centre on first launch.
         persist_window: true,
@@ -2126,6 +2305,29 @@ mod tests {
     fn window_minimum_fits_the_rail() {
         assert!(min_window_size(false).x >= RAIL_W);
         assert!(DEFAULT_SIZE[0] >= min_window_size(false).x);
+    }
+
+    #[test]
+    fn idle_window_keeps_room_for_the_workspace() {
+        assert_eq!(min_window_size(false).x, RAIL_W + MIN_WORKSPACE_W);
+    }
+
+    #[test]
+    fn workspace_tab_round_trips_through_storage_keys() {
+        for tab in [Tab::Rescue, Tab::Script, Tab::Guide] {
+            assert!(Tab::from_key(tab.key()) == tab);
+        }
+        assert!(Tab::from_key("unknown") == Tab::Rescue);
+    }
+
+    #[test]
+    fn body_splits_into_workspace_and_rail_on_either_side() {
+        let body = Rect::from_min_max(pos2(0.0, 40.0), pos2(1000.0, 800.0));
+        let (work, rail) = split_body(body, Side::Right);
+        assert_eq!((rail.left(), rail.width()), (1000.0 - RAIL_W, RAIL_W));
+        assert_eq!((work.left(), work.right()), (0.0, rail.left()));
+        let (work, rail) = split_body(body, Side::Left);
+        assert_eq!((rail.left(), work.left()), (0.0, RAIL_W));
     }
 
     #[test]
