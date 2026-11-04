@@ -237,6 +237,45 @@ frames stay alive while in flight. Test: imported planes read back
 byte-identical to the CPU path's planes.
 **Status**: Complete (device check with a phone pending)
 
+## Stage 14: Rail + workspace layout
+**Why**: the 320 px single column made sense next to a video stage, not on
+its own; rescue/script work needs room.
+**Goal**: window = control rail (fixed `RAIL_W`: 01 连接, 02 投屏, 03 按键,
+04 解锁, 05 工具, 日志) + workspace. Mirroring: workspace = stage (as
+before). Idle: workspace = tabs 救援 · 脚本 · 说明. Idle width is the
+user's (remembered); min idle width = rail + workspace minimum.
+**Tests**: `min_window_size` for idle/mirroring; tab state round-trip.
+**Status**: Not Started
+
+## Stage 15: Script engine for debugging
+**Goal**: parse keeps source line numbers (errors say 第 N 行; steps map to
+lines); one command table (`rescue::COMMANDS`: syntax, meaning, example)
+feeds the parser's help and the 说明 tab — its examples are tested to parse;
+worker: stop (cancel flag, also inside waits), progress (current step),
+pen rotation kept across runs while the device is held (single-stepping
+after `rot:0` works), runs can start fresh (rotation reset) or continue.
+**Tests**: line numbers in errors/steps; every COMMANDS example parses;
+cancel/rotation logic as pure functions.
+**Status**: Not Started
+
+## Stage 16: Script workbench
+**Goal**: 脚本 tab: profile + field (解锁 / 一键救援) picker, code editor
+with line numbers, live validation, 运行全部 / 单步 / 运行当前行 / 停止,
+executing line marker, 保存到机型配置 (rewrites only that section of
+rescue-profiles.txt), 新建机型 (name, adb model, USB ids prefilled from 设备体检).
+**Tests**: `profiles::render` + `replace_section` (replace, append, keep
+other sections and comments); new-profile prefill.
+**Status**: Not Started
+
+## Stage 17: In-app script guide (说明)
+**Goal**: complete guide in the UI: concepts, command reference (from
+COMMANDS), development workflow (measure coordinates, 指针位置 + move,
+single-step, reconnect across USB-mode switches, save), debugging tips /
+FAQ, the Pad3 script annotated line by line; "插入" buttons put examples
+into the editor.
+**Tests**: guide examples parse; Pad3 annotation covers every line.
+**Status**: Not Started
+
 ## Stage 5b: Window/rail stability
 **Goal**: start/stop mirroring resizes in one SetWindowPos keeping the rail's
 screen edge fixed (stage opens on the far side), clamped to the work area.

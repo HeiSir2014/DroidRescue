@@ -139,7 +139,10 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
     for (n, line) in text.lines().enumerate() {
         let n = n + 1;
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        let indented = line.starts_with([' ', '\t']);
+        // Unindented `#` = file comment; indented `#` inside a value is a
+        // script comment and stays with the script.
+        if trimmed.is_empty() || (trimmed.starts_with('#') && !(indented && last_key.is_some())) {
             continue;
         }
         if let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
@@ -162,9 +165,11 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
             (_, Some((k, v))) => (k.trim().to_string(), v.trim()),
             _ => return Err(format!("第 {n} 行: 需要 key = value")),
         };
+        // Continuation lines stay separate lines: newline-separated commands
+        // keep working and the editor shows the script as written.
         let append = |field: &mut String| {
             if continuation && !field.is_empty() {
-                field.push(' ');
+                field.push('\n');
             }
             field.push_str(value);
         };
@@ -290,15 +295,26 @@ mod tests {
 
     #[test]
     fn parses_sections_lists_and_continuations() {
-        let text = "# comment\n[My Phone]\nmodels = V2405A, V2406A\nunlock = wake; enter\nenable = wake;\n  click:0.5,0.5;\n  wait:100\n";
+        let text = "# comment\n[My Phone]\nmodels = V2405A, V2406A\nunlock = wake; enter\nenable = wake\n  click:0.5,0.5\n  wait:100\n";
         let p = parse(text).unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].models, vec!["V2405A", "V2406A"]);
         assert_eq!(p[0].unlock, "wake; enter");
         assert_eq!(
             p[0].enable.as_deref(),
-            Some("wake; click:0.5,0.5; wait:100")
+            Some("wake\nclick:0.5,0.5\nwait:100"),
+            "one command per line, no ';' needed"
         );
+        assert_eq!(
+            rescue::parse(p[0].enable.as_ref().unwrap(), &[])
+                .unwrap()
+                .len(),
+            3
+        );
+
+        let commented =
+            parse("[X]\nunlock = wake\n  # 输入密码\n  text:1\n# file comment\n").unwrap();
+        assert_eq!(commented[0].unlock, "wake\n# 输入密码\ntext:1");
     }
 
     #[test]
