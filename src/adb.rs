@@ -284,7 +284,7 @@ pub fn outcome(success: bool, output: &str) -> Result<String, String> {
 /// as (step name, shell command). The PIN is in the third command only.
 pub fn unlock_commands(password: &str) -> Vec<(&'static str, String)> {
     let mut cmds = vec![
-        ("唤醒", "input keyevent 224".to_string()),
+        (WAKE_STEP, "input keyevent 224".to_string()),
         ("上滑", SWIPE_UP_CMD.to_string()),
     ];
     cmds.extend(
@@ -298,6 +298,8 @@ pub fn unlock_commands(password: &str) -> Vec<(&'static str, String)> {
 
 /// Name of the unlock step(s) that carry the PIN.
 const PIN_STEP: &str = "输入密码";
+/// Name of the unlock step that wakes the screen.
+const WAKE_STEP: &str = "唤醒";
 
 /// Unlock with adb `input`, pausing for the keyguard's animations. Errors
 /// never contain the password.
@@ -311,10 +313,33 @@ pub fn unlock(tools: &Tools, serial: Option<&str>, password: &str) -> Result<(),
                 format!("解锁/{name} 失败: {e}")
             }
         })?;
+        if name == WAKE_STEP {
+            // From deep sleep / always-on display waking takes longer than
+            // any fixed pause: a swipe sent too early is lost and the PIN
+            // lands on a dark keyguard.
+            wait_awake(tools, serial, std::time::Duration::from_secs(3));
+        }
         let pause = if name == PIN_STEP { 150 } else { 600 };
         std::thread::sleep(std::time::Duration::from_millis(pause));
     }
     Ok(())
+}
+
+/// Poll until the device reports `mWakefulness=Awake` or `timeout` passes
+/// (a device whose dumpsys says nothing is not waited on).
+fn wait_awake(tools: &Tools, serial: Option<&str>, timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        match tools
+            .shell(serial, AWAKE_CMD)
+            .ok()
+            .as_deref()
+            .and_then(parse_awake)
+        {
+            Some(false) => std::thread::sleep(std::time::Duration::from_millis(150)),
+            _ => return,
+        }
+    }
 }
 
 /// Device folders exported by 导出照片/文件.
