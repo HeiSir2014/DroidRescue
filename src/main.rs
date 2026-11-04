@@ -67,7 +67,14 @@ use widgets::CaptionIcon;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_LOG_LINES: usize = 500;
-const CAPTION_H: f32 = 40.0;
+/// Caption height. Windows: our own title bar. macOS: the row of the native
+/// traffic lights (transparent title bar, ~28 pt) — taller, the caption's
+/// text sat below the lights and the page painted over its lower half.
+const CAPTION_H: f32 = if cfg!(target_os = "macos") {
+    28.0
+} else {
+    40.0
+};
 const RESIZE_BORDER: f32 = 6.0;
 /// First-launch window: sidebar + a comfortable page.
 const DEFAULT_SIZE: [f32; 2] = [1120.0, 780.0];
