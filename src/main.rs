@@ -682,7 +682,10 @@ impl PadApp {
         use logbar::Level;
         let c = theme::c();
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, 0.0, c.surface);
+        // The page's own background (not the sidebar's surface): the bar
+        // belongs to the content area instead of merging with the sidebar
+        // into one L-shaped block.
+        p.rect_filled(rect, 0.0, c.bg);
         p.line_segment(
             [rect.left_top(), rect.right_top()],
             egui::Stroke::new(1.0, c.line),
@@ -702,7 +705,7 @@ impl PadApp {
         let header = Rect::from_min_size(rect.min, vec2(rect.width(), LOG_CLOSED_H));
         ui.scope_builder(
             egui::UiBuilder::new()
-                .max_rect(header.shrink2(vec2(10.0, 4.0)))
+                .max_rect(header.shrink2(vec2(16.0, 4.0)))
                 .layout(Layout::left_to_right(Align::Center)),
             |ui| {
                 ui.set_clip_rect(header);
@@ -751,13 +754,13 @@ impl PadApp {
             let list = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
             ui.painter_at(rect).line_segment(
                 [
-                    pos2(list.left() + 12.0, list.top()),
-                    pos2(list.right() - 12.0, list.top()),
+                    pos2(list.left() + 18.0, list.top()),
+                    pos2(list.right() - 18.0, list.top()),
                 ],
                 egui::Stroke::new(1.0, c.line),
             );
             ui.scope_builder(
-                egui::UiBuilder::new().max_rect(list.shrink2(vec2(12.0, 6.0))),
+                egui::UiBuilder::new().max_rect(list.shrink2(vec2(18.0, 6.0))),
                 |ui| {
                     ui.set_clip_rect(list);
                     egui::ScrollArea::vertical()
@@ -1445,6 +1448,8 @@ fn status_line(ui: &mut egui::Ui, snap: &Snapshot, now: Instant) {
     job.wrap =
         egui::text::TextWrapping::truncate_at_width((rect.right() - text_left - tail_w).max(0.0));
     let galley = p.layout_job(job);
+    // The full text as a tooltip only when it did not fit.
+    let tip = tip.filter(|_| galley.elided);
     let text_right = text_left + galley.size().x;
     p.galley(
         pos2(text_left, rect.center().y - galley.size().y / 2.0),
