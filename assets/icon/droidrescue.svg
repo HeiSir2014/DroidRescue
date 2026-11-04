@@ -1,36 +1,36 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 安卓救援宝 DroidRescue app icon (source of truth; scripts/make-icons.sh
-     renders the .ico / .icns / .png from it). 1024 grid, macOS tile inset. -->
+     renders the .ico / .icns / .png from it). 1024 grid, macOS tile inset,
+     transparent outside the tile.
+     A lifebuoy (rescue) holding the Android robot head (the device).
+     Flat colours: tile green #1F9D5A, ring white with orange-red #F2683C
+     bands, head white. The in-app mark (icons::brand_mark) draws the same
+     geometry and colours. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2A2E33"/>
-      <stop offset="1" stop-color="#121417"/>
-    </linearGradient>
-    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1E2125"/>
-      <stop offset="1" stop-color="#0A0B0C"/>
-    </linearGradient>
-  </defs>
-
   <!-- Tile -->
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#1F9D5A"/>
   <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none"
-        stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="3"/>
+        stroke="#000000" stroke-opacity="0.08" stroke-width="3"/>
 
-  <!-- Device -->
-  <rect x="300" y="210" width="400" height="604" rx="64" fill="url(#screen)"
-        stroke="#FFB224" stroke-width="40"/>
-  <!-- Crack across the screen -->
-  <polyline points="604,262 548,388 600,436 486,566 530,610 418,742"
-            fill="none" stroke="#FFC65C" stroke-width="18"
-            stroke-linecap="round" stroke-linejoin="round"/>
-  <polyline points="548,388 452,420" fill="none" stroke="#FFC65C" stroke-opacity="0.7"
-            stroke-width="12" stroke-linecap="round"/>
+  <!-- Lifebuoy: white ring (r 188…330), four orange-red bands on the axes -->
+  <circle cx="512" cy="512" r="259" fill="none" stroke="#FFFFFF" stroke-width="142"/>
+  <g fill="#F2683C">
+    <path d="M835.4 446.2 A330 330 0 0 1 835.4 577.8 L696.2 549.5 A188 188 0 0 0 696.2 474.5 Z"/>
+    <path d="M577.8 835.4 A330 330 0 0 1 446.2 835.4 L474.5 696.2 A188 188 0 0 0 549.5 696.2 Z"/>
+    <path d="M188.6 577.8 A330 330 0 0 1 188.6 446.2 L327.8 474.5 A188 188 0 0 0 327.8 549.5 Z"/>
+    <path d="M446.2 188.6 A330 330 0 0 1 577.8 188.6 L549.5 327.8 A188 188 0 0 0 474.5 327.8 Z"/>
+  </g>
 
-  <!-- Rescue badge -->
-  <circle cx="704" cy="716" r="158" fill="#121417"/>
-  <circle cx="704" cy="716" r="132" fill="#FFB224"/>
-  <rect x="682" y="636" width="44" height="160" rx="12" fill="#121417"/>
-  <rect x="624" y="694" width="160" height="44" rx="12" fill="#121417"/>
+  <!-- Android head in the hole: half disc r 122 on y 588, antennae, eyes -->
+  <g fill="#FFFFFF">
+    <path d="M390 588 A122 122 0 0 1 634 588 Z"/>
+  </g>
+  <g stroke="#FFFFFF" stroke-width="16" stroke-linecap="round">
+    <line x1="456.4" y1="499" x2="419.8" y2="440.4"/>
+    <line x1="567.6" y1="499" x2="604.2" y2="440.4"/>
+  </g>
+  <g fill="#1F9D5A">
+    <circle cx="462" cy="546" r="15"/>
+    <circle cx="562" cy="546" r="15"/>
+  </g>
 </svg>

@@ -1,6 +1,7 @@
 //! 设置 page: appearance and where things live.
 
 use super::{card, page_header};
+use crate::icons::{self, Glyph};
 use crate::{PadApp, bundle, log, open_in_text_editor, profiles, theme, widgets};
 use eframe::egui::{self, RichText};
 
@@ -12,7 +13,7 @@ impl PadApp {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 12.0;
                 page_header(ui, "设置", "外观与数据位置。投屏参数在「投屏」页。");
-                card(ui, Some("外观"), |ui| {
+                card(ui, Some((Glyph::Palette, "外观")), |ui| {
                     // egui persists the choice.
                     let mut preference = ui.ctx().options(|o| o.theme_preference);
                     let width = ui.available_width().min(420.0);
@@ -34,7 +35,7 @@ impl PadApp {
                         crate::apply_window_theme(ui.ctx(), preference);
                     }
                 });
-                card(ui, Some("数据"), |ui| {
+                card(ui, Some((Glyph::Folder, "数据")), |ui| {
                     let base = bundle::default_base();
                     ui.label(
                         RichText::new(
@@ -60,18 +61,25 @@ impl PadApp {
                         }
                     });
                 });
-                card(ui, Some("关于"), |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "安卓救援宝 DroidRescue {}",
-                            env!("CARGO_PKG_VERSION")
-                        ))
-                        .color(theme::c().text),
-                    );
-                    ui.hyperlink_to(
-                        "github.com/HeiSir2014/DroidRescue",
-                        "https://github.com/HeiSir2014/DroidRescue",
-                    );
+                card(ui, Some((Glyph::Info, "关于")), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        icons::brand_widget(ui, 56.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "安卓救援宝 DroidRescue {}",
+                                    env!("CARGO_PKG_VERSION")
+                                ))
+                                .font(theme::strong_font(14.0))
+                                .color(theme::c().text),
+                            );
+                            ui.hyperlink_to(
+                                "github.com/HeiSir2014/DroidRescue",
+                                "https://github.com/HeiSir2014/DroidRescue",
+                            );
+                        });
+                    });
                 });
             });
     }

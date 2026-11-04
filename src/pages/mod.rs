@@ -13,14 +13,20 @@ mod tools;
 pub use connect::{ConnectForm, ConnectTab};
 pub use mirror::KEYSTRIP_W;
 
+use crate::icons::{self, Glyph};
 use crate::theme;
-use eframe::egui::{self, Margin, RichText};
+use eframe::egui::{self, Margin, RichText, Sense, vec2};
 
 /// Card radius (widgets keep the smaller `theme::RADIUS`).
 pub const CARD_RADIUS: u8 = 12;
 
-/// A white (dark: graphite) rounded card with an optional title row.
-pub fn card<R>(ui: &mut egui::Ui, title: Option<&str>, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+/// A white (dark: graphite) rounded card with an optional title row: the
+/// feature's coloured icon tile, then the title.
+pub fn card<R>(
+    ui: &mut egui::Ui,
+    title: Option<(Glyph, &str)>,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     egui::Frame::NONE
         .fill(theme::c().surface)
         .stroke(egui::Stroke::new(1.0, theme::c().line))
@@ -29,12 +35,17 @@ pub fn card<R>(ui: &mut egui::Ui, title: Option<&str>, add: impl FnOnce(&mut egu
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 8.0;
-            if let Some(title) = title {
-                ui.label(
-                    RichText::new(title)
-                        .font(theme::strong_font(16.0))
-                        .color(theme::c().text),
-                );
+            if let Some((glyph, title)) = title {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let (rect, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
+                    icons::tile(ui.painter(), rect, glyph);
+                    ui.label(
+                        RichText::new(title)
+                            .font(theme::strong_font(16.0))
+                            .color(theme::c().text),
+                    );
+                });
                 ui.add_space(2.0);
             }
             add(ui)

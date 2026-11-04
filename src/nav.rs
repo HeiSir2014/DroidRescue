@@ -88,6 +88,8 @@ pub fn paint_status(p: &Painter, lamp_center: Pos2, status: &Status) {
 
 /// Height of the status header shown at the top of the sidebar.
 const STATUS_H: f32 = 34.0;
+/// Height of the brand row above it.
+const BRAND_H: f32 = 40.0;
 
 /// Draw the sidebar in `rect`; returns the page clicked, if any. `status`
 /// is shown at the top when the window has no caption of ours (macOS).
@@ -110,6 +112,25 @@ pub fn sidebar(
     let pad = 10.0;
     let mut y = rect.top() + 12.0;
     if let Some(status) = status {
+        // No caption of ours here (macOS): the brand heads the sidebar.
+        let logo_size = if collapsed { 28.0 } else { 26.0 };
+        let logo_x = if collapsed {
+            rect.center().x
+        } else {
+            rect.left() + pad + 6.0 + logo_size / 2.0
+        };
+        let logo = Rect::from_center_size(pos2(logo_x, y + 14.0), vec2(logo_size, logo_size));
+        crate::icons::brand_mark(&p, logo);
+        if !collapsed {
+            p.text(
+                pos2(logo.right() + 10.0, logo.center().y),
+                egui::Align2::LEFT_CENTER,
+                "安卓救援宝",
+                theme::strong_font(15.0),
+                c.text,
+            );
+        }
+        y += BRAND_H;
         let lamp = pos2(rect.left() + 22.0, y + STATUS_H / 2.0 - 6.0);
         if collapsed {
             // Lamp only; the text as a tooltip.

@@ -1,6 +1,7 @@
 //! 工具 page: device utilities that need adb.
 
 use super::{card, page_header};
+use crate::icons::Glyph;
 use crate::{PadApp, Snapshot, theme, widgets};
 use eframe::egui::{self, Margin, RichText, vec2};
 
@@ -14,7 +15,7 @@ impl PadApp {
                 ui.spacing_mut().item_spacing.y = 12.0;
                 page_header(ui, "工具", "需要已授权的 adb 设备。");
                 ui.columns(2, |cols| {
-                    card(&mut cols[0], Some("无线 ADB"), |ui| {
+                    card(&mut cols[0], Some((Glyph::Wifi, "无线 ADB")), |ui| {
                         ui.label(
                             RichText::new("在设备上开启 5555 端口的无线调试并自动连接，之后可以拔掉数据线（需在同一局域网）。")
                                 .color(theme::c().text_dim),
@@ -25,7 +26,7 @@ impl PadApp {
                             self.enable_wireless();
                         }
                     });
-                    card(&mut cols[1], Some("插电常亮"), |ui| {
+                    card(&mut cols[1], Some((Glyph::Bolt, "插电常亮")), |ui| {
                         ui.label(
                             RichText::new("连着电源时屏幕不自动锁定，适合长时间投屏或调试。")
                                 .color(theme::c().text_dim),
@@ -41,7 +42,7 @@ impl PadApp {
                         });
                     });
                 });
-                card(ui, Some("导出照片 / 文件"), |ui| {
+                card(ui, Some((Glyph::Export, "导出照片 / 文件")), |ui| {
                     ui.label(
                         RichText::new("把设备上的相册、下载、文档等目录复制到电脑上的这个文件夹：")
                             .color(theme::c().text_dim),

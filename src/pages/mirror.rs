@@ -3,6 +3,7 @@
 //! card with the mirroring options.
 
 use super::{card, page_header};
+use crate::icons::Glyph;
 use crate::{PadApp, Snapshot, combo_row, control, theme, widgets};
 use eframe::egui::{self, Rect, RichText, vec2};
 use std::sync::atomic::Ordering;
@@ -115,7 +116,9 @@ impl PadApp {
                         );
                     }
                 });
-                card(ui, Some("投屏参数"), |ui| self.mirror_options(ui));
+                card(ui, Some((Glyph::Sliders, "投屏参数")), |ui| {
+                    self.mirror_options(ui)
+                });
             });
     }
 
