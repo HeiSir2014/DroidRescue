@@ -47,11 +47,27 @@ fn is_interface(instance_id: &str) -> bool {
     crate::usbid::UsbTarget::of_instance(instance_id).is_some_and(|t| t.interface.is_some())
 }
 
-/// A tablet MI_01 interface found via its device interface GUID.
+/// A rescue interface found via its device interface GUID.
+#[derive(Debug)]
 struct Found {
     path: Vec<u16>,
     serial: Option<String>,
     parent: String,
+    /// Position of the matching target in the profile's `usb` list.
+    rank: usize,
+}
+
+/// One entry per physical device. A device can carry several rescue
+/// interfaces (e.g. 2D95:6013 MI_00 and MI_01 both bound to WinUSB); any
+/// of them reaches endpoint 0, which is all AOA needs, so counting
+/// interfaces would report one phone as "2 台平板". Keeps the interface
+/// listed first in the profile; an interface without a known parent stays
+/// on its own.
+fn one_per_device(mut found: Vec<Found>) -> Vec<Found> {
+    found.sort_by_key(|f| f.rank);
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|f| f.parent.is_empty() || seen.insert(f.parent.clone()));
+    found
 }
 
 pub struct UsbDevice {
@@ -151,9 +167,12 @@ fn enumerate(targets: &[UsbTarget]) -> Result<Vec<Found>, String> {
             // The USB device owning the interface: its composite parent, or
             // itself when a whole non-composite device is the target.
             let own = device_id(info.DevInst).unwrap_or_default();
-            if !crate::usbid::is_target(targets, &own) {
+            let Some(rank) = targets
+                .iter()
+                .position(|t| crate::usbid::is_target(std::slice::from_ref(t), &own))
+            else {
                 continue; // bound by us once, but no profile declares it now
-            }
+            };
             let mut parent_inst = 0u32;
             let parent = if !is_interface(&own) {
                 own
@@ -166,10 +185,11 @@ fn enumerate(targets: &[UsbTarget]) -> Result<Vec<Found>, String> {
                 path,
                 serial: serial_from_parent_id(&parent),
                 parent,
+                rank,
             });
         }
         SetupDiDestroyDeviceInfoList(set);
-        Ok(found)
+        Ok(one_per_device(found))
     }
 }
 
@@ -295,6 +315,55 @@ impl Drop for UsbDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn found(parent: &str, interface: u16, rank: usize) -> Found {
+        Found {
+            path: vec![interface],
+            serial: serial_from_parent_id(parent),
+            parent: parent.into(),
+            rank,
+        }
+    }
+
+    #[test]
+    fn two_rescue_interfaces_of_one_phone_count_as_one_device() {
+        // The reported case: 2D95:6013 with MI_00 and MI_01 both on WinUSB.
+        let phone = r"USB\VID_2D95&PID_6013\10AF4H265X00237";
+        let devices = one_per_device(vec![found(phone, 1, 1), found(phone, 0, 0)]);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].path, vec![0], "the profile's first interface");
+        assert_eq!(devices[0].serial.as_deref(), Some("10AF4H265X00237"));
+    }
+
+    #[test]
+    fn two_phones_are_still_two_devices() {
+        let a = r"USB\VID_2D95&PID_6013\AAA";
+        let b = r"USB\VID_2D95&PID_6013\BBB";
+        let devices = one_per_device(vec![found(a, 0, 0), found(b, 0, 0), found(a, 1, 1)]);
+        assert_eq!(devices.len(), 2);
+    }
+
+    /// Device check: with one phone whose MI_00 and MI_01 are both on
+    /// WinUSB plugged in, it is found once and opens (nothing is sent).
+    /// `DROIDRESCUE_USB_TARGETS="2D95:6013:00,2D95:6013:01" cargo test
+    /// device_one_phone -- --ignored`
+    #[test]
+    #[ignore]
+    fn device_one_phone_with_two_rescue_interfaces_opens() {
+        let list = std::env::var("DROIDRESCUE_USB_TARGETS").expect("targets");
+        let targets = UsbTarget::parse_list(&list).expect("valid targets");
+        let found = enumerate(&targets).expect("enumerate");
+        assert_eq!(found.len(), 1, "{found:?}");
+        let device = UsbDevice::open(None, &targets).expect("open");
+        assert_eq!(present_serials(&targets), vec![device.serial.clone()]);
+        eprintln!("opened {} ({})", device.serial, device.parent);
+    }
+
+    #[test]
+    fn interfaces_without_a_parent_are_never_merged() {
+        let devices = one_per_device(vec![found("", 0, 0), found("", 1, 0)]);
+        assert_eq!(devices.len(), 2);
+    }
 
     #[test]
     fn serial_comes_from_the_parent_instance_id() {
