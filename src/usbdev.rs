@@ -41,6 +41,11 @@ pub fn serial_from_parent_id(parent: &str) -> Option<String> {
     (!serial.is_empty() && !serial.contains('&')).then(|| serial.to_string())
 }
 
+/// Does this instance id name one interface of a composite device?
+fn is_interface(instance_id: &str) -> bool {
+    crate::usbid::UsbTarget::of_instance(instance_id).is_some_and(|t| t.interface.is_some())
+}
+
 /// A tablet MI_01 interface found via its device interface GUID.
 struct Found {
     path: Vec<u16>,
@@ -141,8 +146,13 @@ fn enumerate() -> Result<Vec<Found>, String> {
                 .take_while(|&c| c != 0)
                 .chain([0])
                 .collect();
+            // The USB device owning the interface: its composite parent, or
+            // itself when a whole non-composite device is the target.
+            let own = device_id(info.DevInst).unwrap_or_default();
             let mut parent_inst = 0u32;
-            let parent = if CM_Get_Parent(&mut parent_inst, info.DevInst, 0) == CR_SUCCESS {
+            let parent = if !is_interface(&own) {
+                own
+            } else if CM_Get_Parent(&mut parent_inst, info.DevInst, 0) == CR_SUCCESS {
                 device_id(parent_inst).unwrap_or_default()
             } else {
                 String::new()
@@ -293,6 +303,14 @@ mod tests {
             "synthesised id"
         );
         assert_eq!(serial_from_parent_id(""), None);
+    }
+
+    #[test]
+    fn a_whole_device_target_is_its_own_parent() {
+        assert!(is_interface(
+            r"USB\VID_2D95&PID_6012&MI_01\7&37F57971&0&0001"
+        ));
+        assert!(!is_interface(r"USB\VID_18D1&PID_4EE1\SER0123456789AB"));
     }
 
     #[test]

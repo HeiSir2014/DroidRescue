@@ -4,6 +4,7 @@ mod adb;
 mod aoa;
 mod audio;
 mod bundle;
+mod checkup;
 mod chrome;
 mod control;
 mod decoder;
@@ -18,6 +19,7 @@ mod secrets;
 mod skin;
 mod theme;
 mod usbdev;
+mod usbid;
 mod video;
 mod widgets;
 mod winusb;
@@ -44,7 +46,16 @@ const RESIZE_BORDER: f32 = 6.0;
 /// Control rail width (logical px).
 const RAIL_W: f32 = 320.0;
 const DEFAULT_SIZE: [f32; 2] = [340.0, 800.0];
-const MIN_SIZE: [f32; 2] = [300.0, 520.0];
+/// The rail is laid out for `RAIL_W`; narrower windows clipped its widgets.
+const MIN_SIZE: [f32; 2] = [RAIL_W, 520.0];
+/// While mirroring, the stage keeps at least this much beside the rail.
+const MIN_STAGE_W: f32 = 200.0;
+
+/// Smallest window that shows the whole rail (and a usable stage).
+fn min_window_size(mirroring: bool) -> egui::Vec2 {
+    let stage = if mirroring { MIN_STAGE_W } else { 0.0 };
+    vec2(MIN_SIZE[0] + stage, MIN_SIZE[1])
+}
 const KEY_HOME: u32 = 3;
 /// Resize frame (old layout) + surface reconfigure + first correct present.
 const UNCLOAK_AFTER_FRAMES: u8 = 3;
@@ -66,6 +77,9 @@ struct Shared {
     orientation: Option<u8>,
     /// Serials of tablets reachable for rescue (WinUSB interface present).
     usb_serials: Vec<String>,
+    /// Every USB function present, driver or not: recognises a device by
+    /// its profile's `usb` ids on a PC that never saw it over adb.
+    usb_present: Vec<usbid::UsbTarget>,
     tasks: Vec<String>,
     log: Vec<String>,
 }
@@ -226,12 +240,17 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
                 None => (None, None, None),
             };
             let usb_serials = usbdev::present_serials();
+            let usb_present = winusb::survey()
+                .iter()
+                .filter_map(winusb::UsbEntry::target)
+                .collect();
             {
                 let mut s = shared.lock().unwrap();
                 s.awake = awake;
                 s.locked = locked;
                 s.orientation = orientation;
                 s.usb_serials = usb_serials;
+                s.usb_present = usb_present;
             }
             ctx.request_repaint();
             thread::sleep(POLL_INTERVAL);
@@ -249,6 +268,7 @@ struct Snapshot {
     locked: Option<bool>,
     orientation: Option<u8>,
     usb_serials: Vec<String>,
+    usb_present: Vec<usbid::UsbTarget>,
     tasks: Vec<String>,
     log: Vec<String>,
 }
@@ -348,6 +368,8 @@ struct PadApp {
     profile_choice: Option<String>,
     /// USB serial → adb model, learnt whenever adb sees a device.
     known_models: profiles::KnownModels,
+    /// Last 设备体检 scan (taken on demand, not every frame).
+    checkup: Option<Vec<checkup::Row>>,
 }
 
 impl PadApp {
@@ -371,7 +393,7 @@ impl PadApp {
 
         let shared: SharedRef = Arc::default();
         let shared_for_rescue = shared.clone();
-        let shared_for_profiles = shared.clone();
+        let profile_list = load_profiles(&shared);
         let tools = match Tools::locate() {
             Ok(t) => {
                 log(
@@ -411,19 +433,23 @@ impl PadApp {
             uncloak_in: 0,
             rescue: {
                 let shared = shared_for_rescue;
-                rescue::Rescue::spawn(Arc::new(move |line| log(&shared, line)))
+                let rescue = rescue::Rescue::spawn(Arc::new(move |line| log(&shared, line)));
+                rescue.set_targets(profiles::usb_targets(&profile_list));
+                rescue
             },
             rescue_text: String::new(),
             rescue_passthrough: false,
             rescue_script_text: String::new(),
-            profiles: load_profiles(&shared_for_profiles),
+            profiles: profile_list,
+            checkup: None,
             profile_choice: None,
             known_models: profiles::KnownModels::load(profiles::known_models_path()),
         }
     }
 
     /// The rescue profile in effect: the user's pick, else by the model last
-    /// seen (via adb) for the tablet on USB, else the selected adb device's.
+    /// seen (via adb) for the tablet on USB, else the selected adb device's,
+    /// else by a USB function a profile declares, else the generic one.
     fn profile(&self, snap: &Snapshot) -> Option<&profiles::Profile> {
         if let Some(name) = &self.profile_choice
             && let Some(p) = self.profiles.iter().find(|p| &p.name == name)
@@ -434,7 +460,18 @@ impl PadApp {
             [one] => self.known_models.get(one),
             _ => None,
         };
-        profiles::pick(&self.profiles, usb_model.or(snap.selected_model()))
+        usb_model
+            .or(snap.selected_model())
+            .and_then(|m| profiles::by_model(&self.profiles, m))
+            .or_else(|| profiles::for_usb(&self.profiles, &snap.usb_present))
+            .or_else(|| profiles::pick(&self.profiles, None))
+    }
+
+    /// (Re)load the profiles and hand their USB functions to the rescue.
+    fn reload_profiles(&mut self) {
+        self.profiles = load_profiles(&self.shared);
+        self.rescue
+            .set_targets(profiles::usb_targets(&self.profiles));
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -451,6 +488,7 @@ impl PadApp {
             locked: s.locked,
             orientation: s.orientation,
             usb_serials: s.usb_serials.clone(),
+            usb_present: s.usb_present.clone(),
             tasks: s.tasks.clone(),
             log: s.log.clone(),
         }
@@ -938,6 +976,7 @@ impl PadApp {
             let label = snap.selected.clone().unwrap_or_else(|| "选择设备".into());
             egui::ComboBox::from_id_salt("device")
                 .width(ui.available_width())
+                .truncate()
                 .selected_text(label)
                 .show_ui(ui, |ui| {
                     for d in &snap.devices {
@@ -1248,8 +1287,11 @@ impl PadApp {
                 (Some(p), false) => p.name.clone(),
                 (None, _) => "—".into(),
             };
+            // Truncate: in a horizontal row the default (Extend) lets a long
+            // profile name push the whole rail wider than the window.
             egui::ComboBox::from_id_salt("rescue-profile")
                 .width(ui.available_width())
+                .truncate()
                 .selected_text(shown)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.profile_choice, None, "自动（按型号）");
@@ -1362,7 +1404,7 @@ impl PadApp {
         widgets::switch(
             ui,
             &mut self.rescue_passthrough,
-            "键盘直通（电脑键盘 = 平板 USB 键盘）",
+            "键盘直通（电脑键盘 → 平板）",
         );
 
         // Workflow script — for adapting to other vivo dialogs / layouts.
@@ -1394,7 +1436,7 @@ impl PadApp {
                 log(&self.shared, format!("✘ 打开机型配置失败: {e}"));
             }
             if widgets::link(ui, "重新加载").clicked() {
-                self.profiles = load_profiles(&self.shared);
+                self.reload_profiles();
                 log(
                     &self.shared,
                     format!("✔ 机型配置: {} 个", self.profiles.len()),
@@ -1405,14 +1447,75 @@ impl PadApp {
             }
         });
         self.winusb_setup_link(ui);
+        egui::CollapsingHeader::new(RichText::new("设备体检").color(theme::c().text_dim))
+            .id_salt("rescue-checkup")
+            .show(ui, |ui| self.checkup_view(ui, snap));
+    }
+
+    /// USB functions as Windows sees them, and whether the rescue can use them.
+    fn checkup_view(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        let c = theme::c();
+        let adb: Vec<String> = snap
+            .devices
+            .iter()
+            .map(|d| format!("{} {} {}", d.serial, d.state, d.model))
+            .collect();
+        ui.horizontal(|ui| {
+            if widgets::link(ui, "扫描").clicked() || self.checkup.is_none() {
+                let targets = profiles::usb_targets(&self.profiles);
+                self.checkup = Some(checkup::rows(&winusb::survey(), &targets));
+            }
+            if let Some(rows) = &self.checkup
+                && widgets::link(ui, "复制报告").clicked()
+            {
+                ui.ctx().copy_text(checkup::report(rows, &adb));
+                log(&self.shared, "✔ 设备体检报告已复制");
+            }
+        });
+        let Some(rows) = &self.checkup else { return };
+        ui.label(RichText::new(checkup::summary(rows)).color(c.text_dim));
+        for r in rows {
+            let color = match r.role {
+                checkup::Role::Ready => c.green,
+                checkup::Role::NeedsDriver => c.amber,
+                checkup::Role::Adb | checkup::Role::Mtp => c.text,
+                checkup::Role::Other => c.text_faint,
+            };
+            let service = if r.service.is_empty() {
+                "无驱动"
+            } else {
+                &r.service
+            };
+            ui.label(
+                RichText::new(format!(
+                    "{:<12} {:<4} {}",
+                    r.target.to_string(),
+                    checkup::role_label(r.role),
+                    service
+                ))
+                .font(theme::mono(10.5))
+                .color(color),
+            )
+            .on_hover_text(&r.description);
+        }
+        let adb_line = if adb.is_empty() {
+            "adb: 无设备".to_string()
+        } else {
+            format!("adb: {}", adb.join(" · "))
+        };
+        ui.label(
+            RichText::new(adb_line)
+                .font(theme::mono(10.5))
+                .color(c.text_dim),
+        );
     }
 
     fn winusb_setup_link(&self, ui: &mut egui::Ui) {
-        if widgets::link(ui, "一次性设置：为平板安装 WinUSB（需管理员）")
-            .on_hover_text("使用 Windows 自带、微软签名的 WinUsb 驱动，只作用于平板的虚拟光驱接口；MTP 文件传输不受影响。平板需插着。")
+        if widgets::link(ui, "为救援接口安装 WinUSB（需管理员）")
+            .on_hover_text("使用 Windows 自带、微软签名的 WinUsb 驱动，只作用于机型配置里声明的救援接口（如 Pad3 的虚拟光驱接口）；MTP 文件传输不受影响。设备需插着。开始救援时也会自动请求。")
             .clicked()
         {
-            match winusb::install_elevated() {
+            match winusb::install_elevated(&profiles::usb_targets(&self.profiles)) {
                 Ok(()) => log(&self.shared, "… 已请求管理员权限安装 WinUSB，结果见日志"),
                 Err(e) => log(&self.shared, format!("✘ {e}")),
             }
@@ -1732,6 +1835,11 @@ impl eframe::App for PadApp {
             }
         }
         let mirroring = self.mirroring();
+        if mirroring != self.was_mirroring {
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min_window_size(
+                mirroring,
+            )));
+        }
         if mirroring && !self.was_mirroring {
             // No stream yet: best guess from the model and current rotation;
             // the stage refits once the first frame reveals the real shape.
@@ -1854,11 +1962,12 @@ fn main() -> eframe::Result {
     // Before anything reads the data dir (log, PINs, window state).
     let migrated = bundle::migrate_legacy_data();
 
-    // Elevated helper mode (started by the rescue panel via UAC): bind the
-    // in-box WinUSB driver to the tablet's MI_01, log the outcome, exit.
+    // Elevated helper mode (started by the rescue via UAC): bind the in-box
+    // WinUSB driver to the given rescue functions, log the outcome, exit.
     if std::env::args().nth(1).as_deref() == Some(winusb::INSTALL_FLAG) {
         let shared: SharedRef = Arc::default();
-        match winusb::install_for_tablet() {
+        let targets = usbid::UsbTarget::parse_list(&std::env::args().nth(2).unwrap_or_default());
+        match targets.and_then(|t| winusb::install(&t)) {
             Ok(ids) => log(&shared, format!("✔ WinUSB 已安装到 {}", ids.join(", "))),
             Err(e) => log(&shared, format!("✘ WinUSB 安装失败: {e}")),
         }
@@ -1914,4 +2023,21 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The window can never get narrower than the rail's layout width.
+    #[test]
+    fn window_minimum_fits_the_rail() {
+        assert!(min_window_size(false).x >= RAIL_W);
+        assert!(DEFAULT_SIZE[0] >= min_window_size(false).x);
+    }
+
+    #[test]
+    fn mirroring_keeps_room_for_the_stage() {
+        assert_eq!(min_window_size(true).x, RAIL_W + MIN_STAGE_W);
+    }
 }

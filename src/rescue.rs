@@ -3,6 +3,7 @@
 //! released after a short idle period, so MTP / adb can see the tablet again.
 
 use crate::aoa::{self, Aoa};
+use crate::usbid::UsbTarget;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -241,15 +242,27 @@ enum Cmd {
 pub struct Rescue {
     tx: Sender<Cmd>,
     pub status: Arc<Mutex<Status>>,
+    /// USB functions the rescue may bind and open (from the profiles).
+    targets: Arc<Mutex<Vec<UsbTarget>>>,
 }
 
 impl Rescue {
     pub fn spawn(log: LogFn) -> Rescue {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(Status::default()));
-        let st = status.clone();
-        thread::spawn(move || worker(rx, st, log));
-        Rescue { tx, status }
+        let targets = Arc::new(Mutex::new(Vec::new()));
+        let (st, tg) = (status.clone(), targets.clone());
+        thread::spawn(move || worker(rx, st, tg, log));
+        Rescue {
+            tx,
+            status,
+            targets,
+        }
+    }
+
+    /// Set after (re)loading the profiles.
+    pub fn set_targets(&self, targets: Vec<UsbTarget>) {
+        *self.targets.lock().unwrap() = targets;
     }
 
     pub fn run(&self, name: &'static str, steps: Vec<Step>) {
@@ -273,13 +286,44 @@ impl Rescue {
 }
 
 /// Open the tablet and register the HID devices.
-fn connect() -> Result<Aoa, String> {
+fn open() -> Result<Aoa, String> {
     let mut aoa = Aoa::open(None)?;
     aoa.register_all()?;
     Ok(aoa)
 }
 
-fn worker(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, log: LogFn) {
+/// [`open`], first binding WinUSB to a target that has no driver yet —
+/// first use on this PC, USB port or mode. One UAC prompt (the helper is
+/// elevated, never this process), then wait for the driver to come up.
+fn connect(targets: &[UsbTarget], log: &LogFn) -> Result<Aoa, String> {
+    match open() {
+        Err(e) if e.contains(crate::usbdev::NOT_FOUND) => {}
+        other => return other,
+    }
+    let unbound = crate::winusb::unbound_targets(targets);
+    let Some(id) = unbound.first() else {
+        return Err(crate::usbdev::NOT_FOUND.into());
+    };
+    log(format!(
+        "… 救援: {id} 还没有 WinUSB，正在请求管理员权限安装 —— 请在电脑上点“是”"
+    ));
+    crate::winusb::install_elevated(targets)?;
+    let deadline = Instant::now() + INSTALL_GRACE;
+    while Instant::now() < deadline {
+        thread::sleep(RECONNECT_POLL);
+        if !crate::usbdev::present_parents().is_empty() {
+            return open();
+        }
+    }
+    Err("等待 WinUSB 安装超时（管理员授权被拒绝？详情见日志）".into())
+}
+
+fn worker(
+    rx: Receiver<Cmd>,
+    status: Arc<Mutex<Status>>,
+    targets: Arc<Mutex<Vec<UsbTarget>>>,
+    log: LogFn,
+) {
     let mut held: Option<Aoa> = None;
     let set = |device: &Option<Aoa>, busy: bool| {
         let mut s = status.lock().unwrap();
@@ -305,7 +349,8 @@ fn worker(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, log: LogFn) {
             }
             Cmd::Run(name, steps) => {
                 set(&held, true);
-                match run_workflow(&mut held, &steps, &log) {
+                let targets = targets.lock().unwrap().clone();
+                match run_workflow(&mut held, &steps, &targets, &log) {
                     Ok(o) if o.skipped > 0 => log(format!(
                         "✘ 救援/{name}: {} 个非 ASCII 字符无法用 USB 键盘输入",
                         o.skipped
@@ -340,7 +385,12 @@ struct Outcome {
 
 /// Run a workflow, splitting it at `reconnect` steps: each segment runs on a
 /// fresh connection once the tablet has come back.
-fn run_workflow(held: &mut Option<Aoa>, steps: &[Step], log: &LogFn) -> Result<Outcome, String> {
+fn run_workflow(
+    held: &mut Option<Aoa>,
+    steps: &[Step],
+    targets: &[UsbTarget],
+    log: &LogFn,
+) -> Result<Outcome, String> {
     let mut outcome = Outcome::default();
     // Rotation carries across segments.
     let mut rotation: u8 = 1;
@@ -351,7 +401,7 @@ fn run_workflow(held: &mut Option<Aoa>, steps: &[Step], log: &LogFn) -> Result<O
         };
         if !body.is_empty() {
             if held.is_none() {
-                let aoa = connect()?;
+                let aoa = connect(targets, log)?;
                 log(format!("✔ 救援: 已接管 {}", aoa.description));
                 *held = Some(aoa);
             }
@@ -368,7 +418,7 @@ fn run_workflow(held: &mut Option<Aoa>, steps: &[Step], log: &LogFn) -> Result<O
                 .take()
                 .map(|a| a.parent().to_string())
                 .unwrap_or_default();
-            let aoa = wait_for_device(&previous, ms, log)?;
+            let aoa = wait_for_device(&previous, ms, targets, log)?;
             log(format!("✔ 救援: 平板重新连接 ({})", aoa.parent()));
             *held = Some(aoa);
             outcome.device_left = false;
@@ -393,7 +443,12 @@ fn is_new_configuration(previous: &str, old_left: bool, present: &[String]) -> b
     }
 }
 
-fn wait_for_device(previous: &str, timeout_ms: u32, log: &LogFn) -> Result<Aoa, String> {
+fn wait_for_device(
+    previous: &str,
+    timeout_ms: u32,
+    targets: &[UsbTarget],
+    log: &LogFn,
+) -> Result<Aoa, String> {
     let mut deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
     let mut old_left = previous.is_empty();
     let mut install_requested = false;
@@ -402,18 +457,20 @@ fn wait_for_device(previous: &str, timeout_ms: u32, log: &LogFn) -> Result<Aoa, 
         let present = crate::usbdev::present_parents();
         old_left |= !present.iter().any(|p| p == previous);
         if is_new_configuration(previous, old_left, &present) {
-            match connect() {
+            match open() {
                 Ok(aoa) => return Ok(aoa),
                 Err(e) => last = e,
             }
-        } else if !install_requested && let [id, ..] = crate::winusb::unbound_targets().as_slice() {
+        } else if !install_requested
+            && let [id, ..] = crate::winusb::unbound_targets(targets).as_slice()
+        {
             // First time in this USB mode on this PC: its interface has no
             // WinUSB yet. Install it now (UAC on the PC screen) and keep waiting.
             install_requested = true;
             log(format!(
                 "… 救援: 新 USB 模式 {id} 还没有 WinUSB，正在请求管理员权限安装 —— 请在电脑上点“是”"
             ));
-            match crate::winusb::install_elevated() {
+            match crate::winusb::install_elevated(targets) {
                 Ok(()) => deadline += INSTALL_GRACE,
                 Err(e) => log(format!("✘ 救援: {e}")),
             }
@@ -658,7 +715,8 @@ mod tests {
         drop(aoa);
         let log: LogFn = Arc::new(|l| println!("{l}"));
         let mut held = None;
-        let outcome = run_workflow(&mut held, &steps, &log).expect("run");
+        let targets = crate::profiles::usb_targets(&crate::profiles::builtin());
+        let outcome = run_workflow(&mut held, &steps, &targets, &log).expect("run");
         println!("ran {} steps ({outcome:?})", steps.len());
     }
 }

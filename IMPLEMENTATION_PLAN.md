@@ -187,7 +187,14 @@ and bind it (one UAC per new port/mode, automatic); target interfaces come
 from the profile (`usb = 2D95:6012:01, 2D95:6013:01`), not code; a 设备体检
 (diagnostics) view: USB mode, interfaces + drivers, AOA protocol, adb state.
 **Tests**: target matching from profiles; unbound detection logic.
-**Status**: Not Started
+**Done**: `usbid::UsbTarget` (`VID:PID[:MI]`, whole non-composite devices
+too); profiles `usb =`; union of all profiles' targets drives binding;
+`rescue::connect` binds unbound targets at rescue start (one UAC, helper
+gets the targets on its command line); profile auto-pick by present USB ids
+(fresh PC, never seen over adb); `checkup` 设备体检 view + copyable report.
+Window minimum width = rail width (+ stage while mirroring).
+**Pending**: device verification on a fresh PC / new port.
+**Status**: Complete (code), device check pending
 
 ## Stage 11: macOS port (Mac mini, ~/Documents/projects/droidrescue)
 **Goal**: same crate, platform modules behind `cfg`: VideoToolbox decode →

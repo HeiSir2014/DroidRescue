@@ -210,14 +210,16 @@ mod tests {
     fn passwords_are_kept_per_device_and_persist() {
         let path = temp_file("persist");
         let mut store = PasswordStore::load(path.clone());
-        store.set("PAD-A", "1111").unwrap();
+        store.set("PAD-A", "pin-1111").unwrap();
         store.set("PAD-B", "it's 2 2").unwrap();
 
         let reloaded = PasswordStore::load(path.clone());
-        assert_eq!(reloaded.get("PAD-A").unwrap().as_deref(), Some("1111"));
+        assert_eq!(reloaded.get("PAD-A").unwrap().as_deref(), Some("pin-1111"));
         assert_eq!(reloaded.get("PAD-B").unwrap().as_deref(), Some("it's 2 2"));
         assert_eq!(reloaded.get("PAD-C").unwrap(), None);
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("1111"));
+        // "pin-" cannot occur by chance in the hex ciphertext (a bare
+        // "1111" could, which made this test flaky).
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("pin-"));
         std::fs::remove_file(&path).unwrap();
     }
 
