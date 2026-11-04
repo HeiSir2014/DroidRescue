@@ -166,11 +166,15 @@ impl Pad {
                 (ui.available_height() - reserve).max(160.0),
             ),
         );
-        let screen = fit(
+        // At the top of the room it may use, so the readout and actions sit
+        // right under it (a flat landscape pad must not float mid-column).
+        let fitted = fit(
             avail.shrink(10.0),
             displayed_ratio(self.aspect, self.rotation),
         );
-        let resp = ui.allocate_rect(avail, Sense::click());
+        let area = Rect::from_min_size(avail.min, vec2(avail.width(), fitted.height() + 20.0));
+        let screen = Rect::from_center_size(area.center(), fitted.size());
+        let resp = ui.allocate_rect(area, Sense::click());
         let hover = resp.hover_pos().filter(|p| screen.contains(*p));
         let hovered = hover.map(|p| normalise(screen, p));
         if resp.clicked()
