@@ -108,26 +108,15 @@ pub fn template() -> String {
     let mut out = String::from(
         "# 安卓救援宝 救援机型配置。每节 [名称]；同名覆盖内置配置。\n\
          # models = adb 型号(逗号分隔)  unlock = 解锁脚本  enable = 一键开启调试脚本(可选)\n\
-         # usb = 救援用的 USB 接口 VID:PID:MI（整机用 VID:PID），见 06 救援 → 高级 → 设备体检\n\
-         # 脚本语法同 06 救援 → 高级 → 脚本；缩进的行接续上一行。\n\
+         # usb = 救援用的 USB 接口 VID:PID:MI（整机用 VID:PID），见 救援 → 设备体检\n\
+         # 推荐在软件的「脚本调试」页编辑（语法检查、单步调试、保存到本文件）；\n\
+         # 脚本语法见「脚本说明」页。缩进的行接续上一行（一行一个动作）。\n\
          # 以下为内置配置，取消注释后修改即可。\n",
     );
     for p in builtin() {
-        out.push_str(&format!(
-            "\n# [{}]\n# models = {}\n# unlock = {}\n",
-            p.name,
-            p.models.join(", "),
-            p.unlock
-        ));
-        if let Some(enable) = &p.enable {
-            out.push_str(&format!(
-                "# enable = {}\n",
-                enable.split_whitespace().collect::<Vec<_>>().join(" ")
-            ));
-        }
-        if !p.usb.is_empty() {
-            let usb: Vec<String> = p.usb.iter().map(UsbTarget::to_string).collect();
-            out.push_str(&format!("# usb = {}\n", usb.join(", ")));
+        out.push('\n');
+        for line in render(&p).lines() {
+            out.push_str(&format!("# {line}\n"));
         }
     }
     out
@@ -139,7 +128,10 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
     for (n, line) in text.lines().enumerate() {
         let n = n + 1;
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        let indented = line.starts_with([' ', '\t']);
+        // Unindented `#` = file comment; indented `#` inside a value is a
+        // script comment and stays with the script.
+        if trimmed.is_empty() || (trimmed.starts_with('#') && !(indented && last_key.is_some())) {
             continue;
         }
         if let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
@@ -162,9 +154,11 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
             (_, Some((k, v))) => (k.trim().to_string(), v.trim()),
             _ => return Err(format!("第 {n} 行: 需要 key = value")),
         };
+        // Continuation lines stay separate lines: newline-separated commands
+        // keep working and the editor shows the script as written.
         let append = |field: &mut String| {
             if continuation && !field.is_empty() {
-                field.push(' ');
+                field.push('\n');
             }
             field.push_str(value);
         };
@@ -210,6 +204,94 @@ pub fn merge(builtin: Vec<Profile>, user: Vec<Profile>) -> Vec<Profile> {
             .map(|b| user.iter().find(|u| u.name == b.name).cloned().unwrap_or(b)),
     );
     out
+}
+
+/// A profile as a file section: `[name]`, then `key = value` lines; a
+/// multi-line script continues on indented lines (one command per line).
+pub fn render(p: &Profile) -> String {
+    let mut out = format!("[{}]\n", p.name);
+    if !p.models.is_empty() {
+        out.push_str(&format!("models = {}\n", p.models.join(", ")));
+    }
+    push_script(&mut out, "unlock", &p.unlock);
+    if let Some(enable) = &p.enable {
+        push_script(&mut out, "enable", enable);
+    }
+    if !p.usb.is_empty() {
+        let usb: Vec<String> = p.usb.iter().map(UsbTarget::to_string).collect();
+        out.push_str(&format!("usb = {}\n", usb.join(", ")));
+    }
+    out
+}
+
+fn push_script(out: &mut String, key: &str, script: &str) {
+    let mut lines = script.lines().map(str::trim).filter(|l| !l.is_empty());
+    out.push_str(&format!("{key} = {}\n", lines.next().unwrap_or("")));
+    for line in lines {
+        out.push_str(&format!("    {line}\n"));
+    }
+}
+
+/// Is this file line a section header (`[name]`, unindented)?
+fn header_name(line: &str) -> Option<&str> {
+    if line.starts_with([' ', '\t']) {
+        return None;
+    }
+    line.trim()
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .map(str::trim)
+}
+
+/// `text` with section `[name]` replaced by `section` (appended when
+/// absent). Everything else — other sections, file comments, the comments
+/// and blank lines just before the next section — is kept as is.
+pub fn replace_section(text: &str, name: &str, section: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines.iter().position(|l| header_name(l) == Some(name)) else {
+        let mut out = text.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(section);
+        return out;
+    };
+    let mut end = lines[start + 1..]
+        .iter()
+        .position(|l| header_name(l).is_some())
+        .map_or(lines.len(), |i| start + 1 + i);
+    // Unindented comments / blank lines before the next section belong to it.
+    while end > start + 1 {
+        let l = lines[end - 1];
+        let unindented_comment = !l.starts_with([' ', '\t']) && l.trim_start().starts_with('#');
+        if l.trim().is_empty() || unindented_comment {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    let mut out: Vec<String> = lines[..start].iter().map(|s| s.to_string()).collect();
+    out.extend(section.lines().map(str::to_string));
+    out.extend(lines[end..].iter().map(|s| s.to_string()));
+    let mut joined = out.join("\n");
+    joined.push('\n');
+    joined
+}
+
+/// Write `profile` into the user's profile file (replacing its section,
+/// or adding it). Creates the file from the template when missing.
+pub fn save(path: &Path, profile: &Profile) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| template());
+    let updated = replace_section(&text, &profile.name, &render(profile));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, updated)?;
+    std::fs::rename(&tmp, path)
 }
 
 /// The first profile that lists this adb model.
@@ -290,15 +372,26 @@ mod tests {
 
     #[test]
     fn parses_sections_lists_and_continuations() {
-        let text = "# comment\n[My Phone]\nmodels = V2405A, V2406A\nunlock = wake; enter\nenable = wake;\n  click:0.5,0.5;\n  wait:100\n";
+        let text = "# comment\n[My Phone]\nmodels = V2405A, V2406A\nunlock = wake; enter\nenable = wake\n  click:0.5,0.5\n  wait:100\n";
         let p = parse(text).unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].models, vec!["V2405A", "V2406A"]);
         assert_eq!(p[0].unlock, "wake; enter");
         assert_eq!(
             p[0].enable.as_deref(),
-            Some("wake; click:0.5,0.5; wait:100")
+            Some("wake\nclick:0.5,0.5\nwait:100"),
+            "one command per line, no ';' needed"
         );
+        assert_eq!(
+            rescue::parse(p[0].enable.as_ref().unwrap(), &[])
+                .unwrap()
+                .len(),
+            3
+        );
+
+        let commented =
+            parse("[X]\nunlock = wake\n  # 输入密码\n  text:1\n# file comment\n").unwrap();
+        assert_eq!(commented[0].unlock, "wake\n# 输入密码\ntext:1");
     }
 
     #[test]
@@ -357,6 +450,49 @@ mod tests {
         assert_eq!(pad.unlock, "wake");
         assert_eq!(pad.enable, None, "an override replaces the whole profile");
         assert_eq!(merged.len(), 3);
+    }
+
+    fn sample() -> Profile {
+        Profile {
+            name: "小米 14".into(),
+            models: vec!["23127PN0CC".into()],
+            unlock: "wake\n# 输入密码\ntext:{pw}; enter".into(),
+            enable: Some("rot:0\nclick:0.5,0.88".into()),
+            usb: UsbTarget::parse_list("2717:FF48").unwrap(),
+        }
+    }
+
+    #[test]
+    fn rendered_profiles_parse_back_identically() {
+        let p = sample();
+        let text = render(&p);
+        assert!(text.starts_with("[小米 14]\n"));
+        assert_eq!(parse(&text).unwrap(), vec![p]);
+    }
+
+    #[test]
+    fn replacing_a_section_keeps_everything_else() {
+        let file = "# header comment\n[A]\nunlock = wake\n\n# about B\n[小米 14]\nunlock = enter\n  wait:100\n\n# trailing note\n[C]\nunlock = back\n";
+        let out = replace_section(file, "小米 14", &render(&sample()));
+        let parsed = parse(&out).unwrap();
+        let names: Vec<&str> = parsed.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["A", "小米 14", "C"], "order kept");
+        assert_eq!(parsed[1], sample());
+        for kept in ["# header comment", "# about B", "# trailing note"] {
+            assert!(out.contains(kept), "{kept} lost:\n{out}");
+        }
+        assert!(!out.contains("wait:100"), "old body replaced");
+    }
+
+    #[test]
+    fn a_new_section_is_appended() {
+        let out = replace_section("# only comments\n", "小米 14", &render(&sample()));
+        assert!(out.starts_with("# only comments\n"));
+        assert_eq!(parse(&out).unwrap(), vec![sample()]);
+        assert_eq!(
+            parse(&replace_section("", "小米 14", &render(&sample()))).unwrap(),
+            vec![sample()]
+        );
     }
 
     #[test]

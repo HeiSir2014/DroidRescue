@@ -237,6 +237,50 @@ frames stay alive while in flight. Test: imported planes read back
 byte-identical to the CPU path's planes.
 **Status**: Complete (device check with a phone pending)
 
+## Stage 14: Sidebar navigation + pages
+**Why**: the 320 px single column made sense next to a video stage, not on
+its own; a rail + tabs split put controls in two places. Owner's direction:
+left navigation, every feature a page (layout language borrowed from
+desktop phone suites — cards, device hero, connect dialog — keeping our
+own palette and type, no third-party branding).
+**Goal**: sidebar (icon + label; collapses to icons while mirroring):
+首页 · 投屏 · 救援 · 脚本调试 · 脚本说明 | 工具 · 设置. 首页 = device hero card
+(name, status tags, actions, drawn device) + 解锁 card; 投屏 = stage + key
+strip; 救援 = rescue/manual/checkup cards; 工具 = wireless adb, export,
+stay-on; 设置 = theme + mirror options. Bottom log drawer on every page.
+Connect dialog (USB / 无线 / 屏幕坏了→救援). Pages live in `src/pages/`.
+**Tests**: window minimums per mode; page key round-trip; body split.
+**Status**: Complete (device check of the mirror page pending)
+
+## Stage 15: Script engine for debugging
+**Goal**: parse keeps source line numbers (errors say 第 N 行; steps map to
+lines); one command table (`rescue::COMMANDS`: syntax, meaning, example)
+feeds the parser's help and the 说明 tab — its examples are tested to parse;
+worker: stop (cancel flag, also inside waits), progress (current step),
+pen rotation kept across runs while the device is held (single-stepping
+after `rot:0` works), runs can start fresh (rotation reset) or continue.
+**Tests**: line numbers in errors/steps; every COMMANDS example parses;
+cancel/rotation logic as pure functions.
+**Status**: Complete
+
+## Stage 16: Script workbench
+**Goal**: 脚本 tab: profile + field (解锁 / 一键救援) picker, code editor
+with line numbers, live validation, 运行全部 / 单步 / 运行当前行 / 停止,
+executing line marker, 保存到机型配置 (rewrites only that section of
+rescue-profiles.txt), 新建机型 (name, adb model, USB ids prefilled from 设备体检).
+**Tests**: `profiles::render` + `replace_section` (replace, append, keep
+other sections and comments); new-profile prefill.
+**Status**: Complete (device run of single-step pending)
+
+## Stage 17: In-app script guide (说明)
+**Goal**: complete guide in the UI: concepts, command reference (from
+COMMANDS), development workflow (measure coordinates, 指针位置 + move,
+single-step, reconnect across USB-mode switches, save), debugging tips /
+FAQ, the Pad3 script annotated line by line; "插入" buttons put examples
+into the editor.
+**Tests**: guide examples parse; Pad3 annotation covers every line.
+**Status**: Complete
+
 ## Stage 5b: Window/rail stability
 **Goal**: start/stop mirroring resizes in one SetWindowPos keeping the rail's
 screen edge fixed (stage opens on the far side), clamped to the work area.

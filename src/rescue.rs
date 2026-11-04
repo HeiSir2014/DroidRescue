@@ -4,6 +4,7 @@
 
 use crate::aoa::{self, Aoa};
 use crate::usbid::UsbTarget;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -50,21 +51,113 @@ pub enum Step {
 
 // ───────────────────────── scripts ─────────────────────────
 //
-// Workflows are data: `;`- or newline-separated commands, `*N` repeats.
-//   wake | enter | tab | space | esc | backspace | up | down | left | right
-//   home | back | select | kpenter        (system / confirm keys)
-//   meta+i | ctrl+a | shift+tab           (modifier + key or letter)
-//   a..z 0..9                             (single key)
-//   click:<x>,<y>  (pen tap, screen fractions)   rot:<0-3>
-//   move:<x>,<y>   (pen hovers there without touching — aim a click)
-//   drag:<x1>,<y1>,<x2>,<y2>[,<ms>]  (press, move, release; same point = long press)
-//   text:<chars>   swipe:<dx>,<dy>   wait:<ms>   pause   reconnect:<ms>
-// `{name}` is substituted from the variables passed to `parse`.
+// Workflows are data: `;`- or newline-separated commands, `*N` repeats,
+// `#` comments, `{name}` substituted from the variables passed to `parse`.
+// The command reference is `COMMANDS` (also rendered in the 说明 tab).
+
+/// One documented script command.
+pub struct CommandDoc {
+    pub group: &'static str,
+    pub syntax: &'static str,
+    pub summary: &'static str,
+    /// Parses (tested); shown and insertable in the guide.
+    pub example: &'static str,
+}
+
+/// The script language reference — the single source for the in-app guide.
+pub const COMMANDS: &[CommandDoc] = &[
+    CommandDoc {
+        group: "按键",
+        syntax: "wake",
+        summary: "唤醒屏幕：按一下 Shift，不输入任何字符",
+        example: "wake",
+    },
+    CommandDoc {
+        group: "按键",
+        syntax: "enter · tab · space · esc · backspace · up · down · left · right",
+        summary: "键盘按键（方向键可在对话框里移动焦点）",
+        example: "tab; enter",
+    },
+    CommandDoc {
+        group: "按键",
+        syntax: "home · back · select · kpenter",
+        summary: "主页、返回、确认（方向键中心键）、小键盘回车",
+        example: "back",
+    },
+    CommandDoc {
+        group: "按键",
+        syntax: "ctrl+a · shift+tab · alt+… · meta+…",
+        summary: "组合键：修饰键 + 按键或字母",
+        example: "shift+tab",
+    },
+    CommandDoc {
+        group: "按键",
+        syntax: "a…z · 0…9",
+        summary: "单个字母或数字键",
+        example: "a",
+    },
+    CommandDoc {
+        group: "文字",
+        syntax: "text:内容",
+        summary: "用 USB 键盘输入文字（只支持英文、数字、符号）；{pw} 替换为锁屏密码",
+        example: "text:{pw}",
+    },
+    CommandDoc {
+        group: "触控笔",
+        syntax: "click:x,y",
+        summary: "笔点按一下。x、y 是屏幕比例 0~1（0,0 左上角；0.5,0.5 正中）",
+        example: "click:0.5,0.88",
+    },
+    CommandDoc {
+        group: "触控笔",
+        syntax: "move:x,y",
+        summary: "笔悬停在该点但不点击——配合开发者选项「指针位置」对准坐标，确认后改成 click",
+        example: "move:0.5,0.88",
+    },
+    CommandDoc {
+        group: "触控笔",
+        syntax: "drag:x1,y1,x2,y2[,毫秒]",
+        summary: "按住从起点拖到终点（默认 300 毫秒，最长 10 秒）；起止相同 = 长按",
+        example: "drag:0.5,0.9,0.5,0.3",
+    },
+    CommandDoc {
+        group: "触控笔",
+        syntax: "rot:0~3",
+        summary: "之后的 click / move / drag 按哪个屏幕方向计算：0 竖屏，1 横屏（默认），2 倒竖，3 反横",
+        example: "rot:0",
+    },
+    CommandDoc {
+        group: "鼠标",
+        syntax: "swipe:dx,dy",
+        summary: "鼠标按住相对移动（受指针加速影响，适合上滑解锁这类粗略手势）",
+        example: "swipe:0,-700",
+    },
+    CommandDoc {
+        group: "时序",
+        syntax: "wait:毫秒 · pause",
+        summary: "等待（pause = 350 毫秒）；等待期间自动保持屏幕不灭",
+        example: "wait:800",
+    },
+    CommandDoc {
+        group: "时序",
+        syntax: "reconnect:毫秒",
+        summary: "设备切换 USB 模式（会断开重连）后，在这里等它重新出现再继续",
+        example: "reconnect:20000",
+    },
+    CommandDoc {
+        group: "结构",
+        syntax: "命令*N · ; · 换行 · # 注释",
+        summary: "*N 重复 N 次；命令用分号或换行分隔；# 开头的行是注释",
+        example: "# 向下移动三次\ndown*3; enter",
+    },
+];
 
 pub const SCRIPT_WAKE: &str = "wake; pause";
 /// Wake → swipe the keyguard up → PIN → Enter.
-pub const SCRIPT_UNLOCK: &str =
-    "wake; wait:500; swipe:0,-700; wait:700; text:{pw}; enter; wait:800";
+pub const SCRIPT_UNLOCK: &str = "\
+wake; wait:500
+swipe:0,-700; wait:700
+text:{pw}; enter; wait:800";
 
 /// Full rescue, verified on the Pad3 (landscape) 2026-11-04 — screen and
 /// USB debugging both unavailable at the start. Positions are fractions of
@@ -75,13 +168,19 @@ pub const SCRIPT_UNLOCK: &str =
 ///     needs to run on the PC (verified by the user 2026-11-04)
 ///  3. dismiss vivo's informational "需打开电脑的 vivo 办公套件" notice (知道了)
 ///  4. "允许 USB 调试吗？": tick 一律允许, tap 允许
+///
+/// One action per line, so the script editor can single-step it (the 说明
+/// tab annotates each line: `guide::PAD3_ANNOTATED`).
 pub const SCRIPT_ENABLE_DEBUGGING: &str = "\
-    wake; wait:500; swipe:0,-700; wait:700; text:{pw}; enter; wait:2500; \
-    rot:1; click:0.41,0.61; wait:500; \
-    reconnect:20000; wait:1500; \
-    click:0.5,0.582; wait:800; \
-    click:0.3625,0.525; wait:400; \
-    click:0.5,0.601; wait:600";
+wake; wait:500
+swipe:0,-700; wait:700
+text:{pw}; enter; wait:2500
+rot:1
+click:0.41,0.61; wait:500
+reconnect:20000; wait:1500
+click:0.5,0.582; wait:800
+click:0.3625,0.525; wait:400
+click:0.5,0.601; wait:600";
 
 const MOD_CTRL: u8 = 0x01;
 const MOD_ALT: u8 = 0x04;
@@ -225,29 +324,70 @@ fn fraction_pair(xy: &str, cmd: &str) -> Result<(u16, u16), String> {
     Ok((frac(x)?, frac(y)?))
 }
 
-/// Parse a workflow script, substituting `{var}` placeholders.
-pub fn parse(script: &str, vars: &[(&str, &str)]) -> Result<Vec<Step>, String> {
+/// A step and the 1-based script line it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Located {
+    pub step: Step,
+    pub line: usize,
+}
+
+/// A script error at a 1-based line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptError {
+    pub line: usize,
+    pub message: String,
+}
+
+impl std::fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "第 {} 行: {}", self.line, self.message)
+    }
+}
+
+/// Parse a workflow script, substituting `{var}` placeholders; every step
+/// keeps its source line (for the debugger's line marker and errors).
+pub fn parse_located(script: &str, vars: &[(&str, &str)]) -> Result<Vec<Located>, ScriptError> {
     let mut steps = Vec::new();
-    for raw in script.split([';', '\n']) {
-        let mut cmd = raw.trim().to_string();
-        if cmd.is_empty() || cmd.starts_with('#') {
-            continue;
-        }
-        for (name, value) in vars {
-            cmd = cmd.replace(&format!("{{{name}}}"), value);
-        }
-        // `text:` keeps its payload verbatim (it may contain '*').
-        let (body, times) = match cmd.rsplit_once('*') {
-            Some((b, n)) if !cmd.starts_with("text:") && n.trim().parse::<u32>().is_ok() => {
-                (b.trim().to_string(), n.trim().parse::<u32>().unwrap())
+    for (index, source_line) in script.lines().enumerate() {
+        let line = index + 1;
+        for raw in source_line.split(';') {
+            let mut cmd = raw.trim().to_string();
+            if cmd.is_empty() || cmd.starts_with('#') {
+                continue;
             }
-            _ => (cmd.clone(), 1),
-        };
-        let step = parse_command(&body)?;
-        steps.extend(std::iter::repeat_n(step, times as usize));
+            for (name, value) in vars {
+                cmd = cmd.replace(&format!("{{{name}}}"), value);
+            }
+            // `text:` keeps its payload verbatim (it may contain '*').
+            let (body, times) = match cmd.rsplit_once('*') {
+                Some((b, n)) if !cmd.starts_with("text:") && n.trim().parse::<u32>().is_ok() => {
+                    (b.trim().to_string(), n.trim().parse::<u32>().unwrap())
+                }
+                _ => (cmd.clone(), 1),
+            };
+            let step = parse_command(&body).map_err(|message| ScriptError { line, message })?;
+            steps.extend(std::iter::repeat_n(Located { step, line }, times as usize));
+        }
     }
     Ok(steps)
 }
+
+/// [`parse_located`] without line numbers (errors still name the line).
+pub fn parse(script: &str, vars: &[(&str, &str)]) -> Result<Vec<Step>, String> {
+    parse_located(script, vars)
+        .map(|steps| steps.into_iter().map(|l| l.step).collect())
+        .map_err(|e| e.to_string())
+}
+
+/// Pen rotation when a run starts: a fresh run starts in the default
+/// (landscape) orientation; a continued run (single-stepping) keeps what
+/// earlier `rot:` steps set.
+fn start_rotation(fresh: bool, held: u8) -> u8 {
+    if fresh { DEFAULT_ROTATION } else { held }
+}
+
+/// Default display rotation for pen taps (1 = landscape, the Pad3's).
+pub const DEFAULT_ROTATION: u8 = 1;
 
 /// How a blind unlock reaches the device.
 #[derive(Debug, PartialEq, Eq)]
@@ -278,31 +418,76 @@ pub struct Status {
     pub busy: bool,
     /// The last attempt found no WinUSB-bound tablet: offer the setup link.
     pub needs_setup: bool,
+    /// Script line being executed (runs started from the script editor).
+    pub line: Option<usize>,
+    /// Pen rotation the next continued run starts with.
+    pub rotation: u8,
+}
+
+/// One queued run.
+struct Run {
+    name: &'static str,
+    steps: Vec<Step>,
+    /// Source line per step (empty when not run from the editor).
+    lines: Vec<usize>,
+    /// Start with the default rotation (a whole script) or continue with
+    /// the held device's rotation (single-stepping).
+    fresh: bool,
+    /// Stop epoch when queued; a later [`Rescue::stop`] cancels the run.
+    epoch: u64,
 }
 
 enum Cmd {
-    Run(&'static str, Vec<Step>),
+    Run(Run),
     Release,
 }
+
+/// Error text of a run cancelled with [`Rescue::stop`].
+pub const STOPPED: &str = "已停止";
 
 pub struct Rescue {
     tx: Sender<Cmd>,
     pub status: Arc<Mutex<Status>>,
     /// USB functions the rescue may bind and open (from the profiles).
     targets: Arc<Mutex<Vec<UsbTarget>>>,
+    /// Stop epoch: bumped by [`Rescue::stop`].
+    stop: Arc<AtomicU64>,
+}
+
+/// What the worker thread shares with the UI.
+struct Worker {
+    status: Arc<Mutex<Status>>,
+    targets: Arc<Mutex<Vec<UsbTarget>>>,
+    stop: Arc<AtomicU64>,
+    log: LogFn,
+}
+
+/// Has `epoch`'s run been cancelled?
+fn cancelled(stop: &AtomicU64, epoch: u64) -> bool {
+    stop.load(Ordering::Acquire) != epoch
 }
 
 impl Rescue {
     pub fn spawn(log: LogFn) -> Rescue {
         let (tx, rx) = mpsc::channel();
-        let status = Arc::new(Mutex::new(Status::default()));
+        let status = Arc::new(Mutex::new(Status {
+            rotation: DEFAULT_ROTATION,
+            ..Status::default()
+        }));
         let targets = Arc::new(Mutex::new(Vec::new()));
-        let (st, tg) = (status.clone(), targets.clone());
-        thread::spawn(move || worker(rx, st, tg, log));
+        let stop = Arc::new(AtomicU64::new(0));
+        let shared = Worker {
+            status: status.clone(),
+            targets: targets.clone(),
+            stop: stop.clone(),
+            log,
+        };
+        thread::spawn(move || worker(rx, shared));
         Rescue {
             tx,
             status,
             targets,
+            stop,
         }
     }
 
@@ -312,7 +497,34 @@ impl Rescue {
     }
 
     pub fn run(&self, name: &'static str, steps: Vec<Step>) {
-        let _ = self.tx.send(Cmd::Run(name, steps));
+        let _ = self.tx.send(Cmd::Run(Run {
+            name,
+            steps,
+            lines: Vec::new(),
+            fresh: true,
+            epoch: self.stop.load(Ordering::Acquire),
+        }));
+    }
+
+    /// Run steps from the script editor: the status reports the executing
+    /// line; `fresh` = a whole script (default rotation), else continue
+    /// where the previous single step left the pen rotation.
+    pub fn run_located(&self, name: &'static str, steps: Vec<Located>, fresh: bool) {
+        let (steps, lines) = steps.into_iter().map(|l| (l.step, l.line)).unzip();
+        let _ = self.tx.send(Cmd::Run(Run {
+            name,
+            steps,
+            lines,
+            fresh,
+            epoch: self.stop.load(Ordering::Acquire),
+        }));
+    }
+
+    /// Cancel the running sequence and everything queued before this call
+    /// (at the next step, or within a wait). Runs queued later are not
+    /// affected, so a stop can never swallow the next command.
+    pub fn stop(&self) {
+        self.stop.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Parse and queue a workflow script (see the script syntax above).
@@ -365,18 +577,19 @@ fn connect(targets: &[UsbTarget], log: &LogFn) -> Result<Aoa, String> {
     Err("等待 WinUSB 安装超时（管理员授权被拒绝？详情见日志）".into())
 }
 
-fn worker(
-    rx: Receiver<Cmd>,
-    status: Arc<Mutex<Status>>,
-    targets: Arc<Mutex<Vec<UsbTarget>>>,
-    log: LogFn,
-) {
+fn worker(rx: Receiver<Cmd>, w: Worker) {
+    let log = &w.log;
     let mut held: Option<Aoa> = None;
-    let set = |device: &Option<Aoa>, busy: bool| {
-        let mut s = status.lock().unwrap();
+    let mut rotation = DEFAULT_ROTATION;
+    let set = |device: &Option<Aoa>, busy: bool, rotation: u8| {
+        let mut s = w.status.lock().unwrap();
         s.device = device.as_ref().map(|a| a.description.clone());
         s.serial = device.as_ref().map(|a| a.serial.clone());
         s.busy = busy;
+        s.rotation = rotation;
+        if !busy {
+            s.line = None;
+        }
         if device.is_some() {
             s.needs_setup = false;
         }
@@ -392,12 +605,24 @@ fn worker(
                 if held.take().is_some() {
                     log("救援: 已释放平板".into());
                 }
-                set(&held, false);
+                rotation = DEFAULT_ROTATION;
+                set(&held, false, rotation);
             }
-            Cmd::Run(name, steps) => {
-                set(&held, true);
-                let targets = targets.lock().unwrap().clone();
-                match run_workflow(&mut held, &steps, &targets, &log) {
+            Cmd::Run(run) if cancelled(&w.stop, run.epoch) => {} // stopped while queued
+            Cmd::Run(run) => {
+                let name = run.name;
+                rotation = start_rotation(run.fresh, rotation);
+                set(&held, true, rotation);
+                let targets = w.targets.lock().unwrap().clone();
+                let hooks = Hooks {
+                    cancelled: &|| cancelled(&w.stop, run.epoch),
+                    on_step: &|index| {
+                        w.status.lock().unwrap().line = run.lines.get(index).copied();
+                    },
+                };
+                let result =
+                    run_workflow(&mut held, &run.steps, &mut rotation, &targets, log, &hooks);
+                match result {
                     Ok(o) if o.skipped > 0 => log(format!(
                         "✘ 救援/{name}: {} 个非 ASCII 字符无法用 USB 键盘输入",
                         o.skipped
@@ -408,16 +633,34 @@ fn worker(
                     }
                     Ok(_) if name.is_empty() => {} // keyboard passthrough: too chatty to log
                     Ok(_) => log(format!("✔ 救援/{name}")),
+                    // The device is fine: keep holding it for the next run.
+                    Err(e) if e == STOPPED => log(format!("■ 救援/{name}: 已停止")),
                     Err(e) => {
-                        status.lock().unwrap().needs_setup = e.contains(crate::usbdev::NOT_FOUND);
+                        w.status.lock().unwrap().needs_setup = e.contains(crate::usbdev::NOT_FOUND);
                         log(format!("✘ 救援/{name}: {e}"));
                         held = None; // the device went away or re-enumerated
                     }
                 }
-                set(&held, false);
+                set(&held, false, rotation);
             }
         }
     }
+}
+
+/// Progress / cancellation callbacks of one run.
+struct Hooks<'a> {
+    cancelled: &'a dyn Fn() -> bool,
+    /// Called before each step with its index in the run.
+    on_step: &'a dyn Fn(usize),
+}
+
+impl Hooks<'_> {
+    /// No progress, never cancelled (tests, the manual harness).
+    #[cfg(test)]
+    const NONE: Hooks<'static> = Hooks {
+        cancelled: &|| false,
+        on_step: &|_| {},
+    };
 }
 
 /// What a finished sequence observed.
@@ -435,18 +678,28 @@ struct Outcome {
 fn run_workflow(
     held: &mut Option<Aoa>,
     steps: &[Step],
+    rotation: &mut u8,
     targets: &[UsbTarget],
     log: &LogFn,
+    hooks: &Hooks,
 ) -> Result<Outcome, String> {
     let mut outcome = Outcome::default();
-    // Rotation carries across segments.
-    let mut rotation: u8 = 1;
+    // Index of the segment's first step in `steps` (for progress).
+    let mut offset = 0;
     for segment in steps.split_inclusive(|s| matches!(s, Step::Reconnect(_))) {
         let (body, reconnect) = match segment.split_last() {
             Some((Step::Reconnect(ms), body)) => (body, Some(*ms)),
             _ => (segment, None),
         };
-        if !body.is_empty() {
+        if body.iter().all(|s| matches!(s, Step::Rotation(_))) {
+            // Nothing to send (e.g. single-stepping a `rot:` line): no device needed.
+            for (i, step) in body.iter().enumerate() {
+                (hooks.on_step)(offset + i);
+                if let Step::Rotation(r) = step {
+                    *rotation = *r;
+                }
+            }
+        } else {
             if held.is_none() {
                 let aoa = connect(targets, log)?;
                 log(format!("✔ 救援: 已接管 {}", aoa.description));
@@ -455,21 +708,25 @@ fn run_workflow(
             let left = run_segment(
                 held.as_ref().unwrap(),
                 body,
-                &mut rotation,
+                offset,
+                rotation,
                 &mut outcome.skipped,
+                hooks,
             )?;
             outcome.device_left = left;
         }
         if let Some(ms) = reconnect {
+            (hooks.on_step)(offset + body.len());
             let previous = held
                 .take()
                 .map(|a| a.parent().to_string())
                 .unwrap_or_default();
-            let aoa = wait_for_device(&previous, ms, targets, log)?;
+            let aoa = wait_for_device(&previous, ms, targets, log, hooks)?;
             log(format!("✔ 救援: 平板重新连接 ({})", aoa.parent()));
             *held = Some(aoa);
             outcome.device_left = false;
         }
+        offset += segment.len();
     }
     Ok(outcome)
 }
@@ -495,12 +752,16 @@ fn wait_for_device(
     timeout_ms: u32,
     targets: &[UsbTarget],
     log: &LogFn,
+    hooks: &Hooks,
 ) -> Result<Aoa, String> {
     let mut deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
     let mut old_left = previous.is_empty();
     let mut install_requested = false;
     let mut last = String::from("平板尚未重新出现");
     while Instant::now() < deadline {
+        if (hooks.cancelled)() {
+            return Err(STOPPED.into());
+        }
         let present = crate::usbdev::present_parents(targets);
         old_left |= !present.iter().any(|p| p == previous);
         if is_new_configuration(previous, old_left, &present) {
@@ -534,12 +795,14 @@ fn wait_for_device(
 fn run_segment(
     aoa: &Aoa,
     steps: &[Step],
+    offset: usize,
     rotation: &mut u8,
     skipped: &mut usize,
+    hooks: &Hooks,
 ) -> Result<bool, String> {
-    match run_steps(aoa, steps, rotation, skipped) {
+    match run_steps(aoa, steps, offset, rotation, skipped, hooks) {
         Ok(()) => Ok(false),
-        Err((index, _)) if only_waits_after(steps, index) => Ok(true),
+        Err((index, e)) if e != STOPPED && only_waits_after(steps, index) => Ok(true),
         Err((_, e)) => Err(e),
     }
 }
@@ -555,16 +818,22 @@ fn frac(v: u16) -> f32 {
     f32::from(v) / 10_000.0
 }
 
-/// Err((step index, error)).
+/// Err((step index, error)); `offset` = index of `steps[0]` in the run.
 fn run_steps(
     aoa: &Aoa,
     steps: &[Step],
+    offset: usize,
     rotation: &mut u8,
     skipped: &mut usize,
+    hooks: &Hooks,
 ) -> Result<(), (usize, String)> {
     let mut last_input = Instant::now();
     for (index, step) in steps.iter().enumerate() {
         let at = |e: String| (index, e);
+        if (hooks.cancelled)() {
+            return Err(at(STOPPED.into()));
+        }
+        (hooks.on_step)(offset + index);
         match step {
             Step::Key(m, k) => aoa.tap_key(*m, *k).map_err(at)?,
             Step::Text(t) => *skipped += aoa.type_text(t).map_err(at)?,
@@ -589,6 +858,9 @@ fn run_steps(
                 // Sleep in slices, tapping Shift so the screen never times out.
                 let end = Instant::now() + Duration::from_millis(u64::from(*ms));
                 while Instant::now() < end {
+                    if (hooks.cancelled)() {
+                        return Err(at(STOPPED.into()));
+                    }
                     if last_input.elapsed() >= KEEP_AWAKE {
                         aoa.tap_key(aoa::MOD_SHIFT, 0).map_err(at)?;
                         last_input = Instant::now();
@@ -687,6 +959,96 @@ mod tests {
         assert!(parse("click:1.5,0.2", &[]).is_err());
         assert!(parse("click:0.5", &[]).is_err());
         assert!(parse("rot:4", &[]).is_err());
+    }
+
+    #[test]
+    fn steps_remember_their_source_line() {
+        let script = "# setup\nwake; wait:100\n\nclick:0.5,0.5\nenter*2";
+        let located = parse_located(script, &[]).unwrap();
+        let lines: Vec<usize> = located.iter().map(|l| l.line).collect();
+        assert_eq!(lines, [2, 2, 4, 5, 5]);
+        assert_eq!(located[2].step, Step::Tap(5000, 5000));
+    }
+
+    #[test]
+    fn errors_name_the_line() {
+        let err = parse_located("wake\nwait:100\nclick:2,0", &[]).unwrap_err();
+        assert_eq!(err.line, 3);
+        assert!(err.to_string().starts_with("第 3 行"), "{err}");
+        assert!(
+            parse("wake\nnonsense", &[])
+                .unwrap_err()
+                .contains("第 2 行"),
+            "plain parse reports it too"
+        );
+    }
+
+    #[test]
+    fn every_documented_example_parses() {
+        for doc in COMMANDS {
+            parse(doc.example, &[("pw", "1234")])
+                .unwrap_or_else(|e| panic!("{} example {:?}: {e}", doc.syntax, doc.example));
+        }
+        // Each step kind is documented at least once.
+        let documented: Vec<Step> = COMMANDS
+            .iter()
+            .flat_map(|d| parse(d.example, &[("pw", "1")]).unwrap())
+            .collect();
+        let has = |f: fn(&Step) -> bool| documented.iter().any(f);
+        assert!(has(|s| matches!(s, Step::Key(..))));
+        assert!(has(|s| matches!(s, Step::Text(_))));
+        assert!(has(|s| matches!(s, Step::Consumer(_))));
+        assert!(has(|s| matches!(s, Step::Swipe(..))));
+        assert!(has(|s| matches!(s, Step::Tap(..))));
+        assert!(has(|s| matches!(s, Step::Hover(..))));
+        assert!(has(|s| matches!(s, Step::Drag { .. })));
+        assert!(has(|s| matches!(s, Step::Rotation(_))));
+        assert!(has(|s| matches!(s, Step::Wait(_))));
+        assert!(has(|s| matches!(s, Step::Reconnect(_))));
+    }
+
+    #[test]
+    fn stop_cancels_earlier_runs_only() {
+        let stop = AtomicU64::new(0);
+        let queued_before = stop.load(Ordering::Acquire);
+        stop.fetch_add(1, Ordering::AcqRel); // Rescue::stop
+        let queued_after = stop.load(Ordering::Acquire);
+        assert!(cancelled(&stop, queued_before));
+        assert!(
+            !cancelled(&stop, queued_after),
+            "a stop never swallows the next command"
+        );
+    }
+
+    #[test]
+    fn rotation_only_runs_need_no_device() {
+        let mut held = None;
+        let mut rotation = DEFAULT_ROTATION;
+        let lines = std::sync::Mutex::new(Vec::new());
+        let hooks = Hooks {
+            cancelled: &|| false,
+            on_step: &|i| lines.lock().unwrap().push(i),
+        };
+        let log: LogFn = Arc::new(|_| {});
+        let outcome = run_workflow(
+            &mut held,
+            &[Step::Rotation(0)],
+            &mut rotation,
+            &[],
+            &log,
+            &hooks,
+        )
+        .unwrap();
+        assert_eq!(outcome, Outcome::default());
+        assert_eq!(rotation, 0);
+        assert_eq!(*lines.lock().unwrap(), [0]);
+        assert!(held.is_none());
+    }
+
+    #[test]
+    fn rotation_resets_for_fresh_runs_and_carries_over_for_steps() {
+        assert_eq!(start_rotation(true, 0), DEFAULT_ROTATION);
+        assert_eq!(start_rotation(false, 0), 0, "single-step keeps rot:0");
     }
 
     #[test]
@@ -808,7 +1170,16 @@ mod tests {
         drop(aoa);
         let log: LogFn = Arc::new(|l| println!("{l}"));
         let mut held = None;
-        let outcome = run_workflow(&mut held, &steps, &targets, &log).expect("run");
+        let mut rotation = DEFAULT_ROTATION;
+        let outcome = run_workflow(
+            &mut held,
+            &steps,
+            &mut rotation,
+            &targets,
+            &log,
+            &Hooks::NONE,
+        )
+        .expect("run");
         println!("ran {} steps ({outcome:?})", steps.len());
     }
 }
