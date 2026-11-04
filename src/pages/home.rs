@@ -2,6 +2,7 @@
 //! actions and a drawing of the device — then unlocking and system keys.
 
 use super::{ConnectTab, card, tag};
+use crate::icons::{self, Glyph};
 use crate::nav::{self, Page};
 use crate::{PadApp, Snapshot, rescue, skin, theme, widgets};
 use eframe::egui::{self, Align, Layout, Margin, Rect, RichText, Sense, vec2};
@@ -18,14 +19,16 @@ impl PadApp {
                 ui.spacing_mut().item_spacing.y = 12.0;
                 card(ui, None, |ui| self.hero(ui, snap));
                 ui.columns(2, |cols| {
-                    card(&mut cols[0], Some("解锁"), |ui| {
+                    card(&mut cols[0], Some((Glyph::Unlock, "解锁")), |ui| {
                         ui.label(
                             RichText::new("锁屏密码可提前输入；有 adb 时经 adb 输入，没有时经 USB 模拟键盘输入。")
                                 .color(theme::c().text_dim),
                         );
                         self.unlock_controls(ui, snap);
                     });
-                    card(&mut cols[1], Some("按键"), |ui| self.system_keys(ui, snap));
+                    card(&mut cols[1], Some((Glyph::Keys, "按键")), |ui| {
+                        self.system_keys(ui, snap)
+                    });
                 });
             });
     }
@@ -138,25 +141,27 @@ impl PadApp {
                         let (label, live) = if self.mirroring() {
                             ("查看投屏", true)
                         } else {
-                            ("▶  手机投屏", false)
+                            ("手机投屏", false)
                         };
-                        if action(ui, label, size, true, true).clicked() {
+                        if action(ui, Glyph::Mirror, label, size, true).clicked() {
                             if !live {
                                 self.start_mirror(ui.ctx());
                             }
                             self.page = Page::Mirror;
                         }
-                        if action(ui, "无线 ADB", size, false, true).clicked() {
+                        if action(ui, Glyph::Wifi, "无线 ADB", size, false).clicked() {
                             self.enable_wireless();
                         }
-                        if action(ui, "导出照片/文件", size, false, true).clicked() {
+                        if action(ui, Glyph::Export, "导出照片/文件", size, false).clicked() {
                             self.backup();
                         }
                     } else {
-                        if action(ui, "连接设备", size, true, true).clicked() {
+                        if action(ui, Glyph::Usb, "连接设备", size, true).clicked() {
                             self.connect = Some(ConnectTab::Usb);
                         }
-                        if action(ui, "屏幕坏了？去救援", size, false, true).clicked() {
+                        if action(ui, Glyph::Rescue, "屏幕坏了？去救援", vec2(160.0, 40.0), false)
+                            .clicked()
+                        {
                             self.page = Page::Rescue;
                         }
                     }
@@ -270,27 +275,50 @@ impl PadApp {
     }
 }
 
-/// A hero action button: primary = amber fill.
+/// A hero action button: icon + label centred together; primary = amber
+/// fill (icon in the label colour), others show the feature's hue.
 fn action(
     ui: &mut egui::Ui,
+    glyph: Glyph,
     label: &str,
     size: egui::Vec2,
     primary: bool,
-    enabled: bool,
 ) -> egui::Response {
     let c = theme::c();
-    let (fill, text) = if primary {
-        (c.amber, c.on_amber)
-    } else {
-        (c.surface_hi, c.text)
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let (fill, text, icon) = match (primary, resp.hovered()) {
+        (true, false) => (c.amber, c.on_amber, c.on_amber),
+        (true, true) => (c.amber_hi, c.on_amber, c.on_amber),
+        (false, false) => (c.surface_hi, c.text, glyph.hue()),
+        (false, true) => (c.surface_hover, c.text, glyph.hue()),
     };
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(RichText::new(label).color(text))
-            .fill(fill)
-            .corner_radius(8)
-            .min_size(size),
-    )
+    let p = ui.painter();
+    p.rect_filled(rect, 8.0, fill);
+    if !primary {
+        p.rect_stroke(
+            rect,
+            8.0,
+            egui::Stroke::new(1.0, c.line),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let galley = p.layout_no_wrap(label.to_string(), theme::ui(13.5), text);
+    let (icon_w, gap) = (16.0, 8.0);
+    let left = rect.center().x - (icon_w + gap + galley.size().x) / 2.0;
+    icons::draw(
+        p,
+        glyph,
+        egui::pos2(left + icon_w / 2.0, rect.center().y),
+        icon_w,
+        icon,
+    );
+    p.galley(
+        egui::pos2(left + icon_w + gap, rect.center().y - galley.size().y / 2.0),
+        galley,
+        text,
+    );
+    resp
 }
 
 /// The selected device (or a generic one) as drawn hardware.

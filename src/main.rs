@@ -21,6 +21,7 @@ mod decoder_vt;
 mod e2e;
 mod geometry;
 mod guide;
+mod icons;
 mod input;
 mod mirror;
 mod nav;
@@ -1070,12 +1071,14 @@ impl PadApp {
         );
 
         let y = rect.center().y;
+        let logo = Rect::from_center_size(pos2(rect.left() + 12.0 + 11.0, y), vec2(22.0, 22.0));
+        icons::brand_mark(p, logo);
         let mark = p.text(
-            pos2(rect.left() + 14.0, y),
+            pos2(logo.right() + 8.0, y),
             Align2::LEFT_CENTER,
             "安卓救援宝",
             theme::strong_font(15.0),
-            theme::c().amber,
+            theme::c().text,
         );
         // The English name lives in the OS window title (taskbar, Alt-Tab).
         let status = self.device_status(snap);

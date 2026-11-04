@@ -2,6 +2,7 @@
 //! with USB debugging off, on the lock screen, with no screen.
 
 use super::{card, page_header};
+use crate::icons::Glyph;
 use crate::nav::Page;
 use crate::{
     PadApp, Snapshot, aoa, checkup, log, open_in_text_editor, profiles, rescue, theme, usbhost,
@@ -24,16 +25,16 @@ impl PadApp {
                 ui.columns(2, |cols| {
                     cols[0].spacing_mut().item_spacing.y = 12.0;
                     cols[1].spacing_mut().item_spacing.y = 12.0;
-                    card(&mut cols[0], Some("一键救援"), |ui| {
+                    card(&mut cols[0], Some((Glyph::Rescue, "一键救援")), |ui| {
                         self.rescue_actions(ui, snap, &status);
                     });
-                    card(&mut cols[0], Some("手动操作"), |ui| {
+                    card(&mut cols[0], Some((Glyph::Manual, "手动操作")), |ui| {
                         self.rescue_manual(ui, &status);
                     });
-                    card(&mut cols[1], Some("机型配置"), |ui| {
+                    card(&mut cols[1], Some((Glyph::Profile, "机型配置")), |ui| {
                         self.rescue_profiles_card(ui, &status);
                     });
-                    card(&mut cols[1], Some("设备体检"), |ui| {
+                    card(&mut cols[1], Some((Glyph::Checkup, "设备体检")), |ui| {
                         self.checkup_view(ui, snap);
                     });
                 });
