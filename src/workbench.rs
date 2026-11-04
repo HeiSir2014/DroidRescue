@@ -10,6 +10,7 @@
 use crate::checkup;
 use crate::guide;
 use crate::icons::KeyIcon;
+use crate::pad;
 use crate::profiles::{self, Profile};
 use crate::rescue::{self, Located, Rescue, ScriptError};
 use crate::theme;
@@ -102,6 +103,7 @@ pub struct Workbench {
     /// The last run reached the script's end (single step on the last step,
     /// or 运行全部): say so instead of only pointing back at step 1.
     at_end: bool,
+    pad: pad::Pad,
 }
 
 impl Default for Workbench {
@@ -117,6 +119,7 @@ impl Default for Workbench {
             inserted: None,
             hover_hint_shown: std::cell::Cell::new(false),
             at_end: false,
+            pad: pad::Pad::default(),
         }
     }
 }
@@ -138,6 +141,19 @@ fn marker_lines(
         .then(|| steps.get(next_step).map(|s| s.line))
         .flatten();
     (next, running)
+}
+
+/// `text` with `new` as its own line right after 1-based `line` (at the
+/// end when `line` is past it), keeping the original line ending style.
+fn insert_after_line(text: &str, line: usize, new: &str) -> String {
+    let mut lines: Vec<&str> = text.lines().collect();
+    let at = line.min(lines.len());
+    lines.insert(at, new);
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// 1-based line of a char offset.
@@ -237,7 +253,47 @@ impl Workbench {
         );
         let footer_h = 30.0;
         let editor_h = (ui.available_height() - footer_h).max(120.0);
-        self.editor(ui, editor_h, error_line, next, running);
+        // Editor | coordinate pad, side by side when there is room.
+        let gap = 14.0;
+        let pad_w = (ui.available_width() * 0.36).clamp(260.0, 380.0);
+        let with_pad = ui.available_width() >= 640.0;
+        let editor_w = if with_pad {
+            ui.available_width() - pad_w - gap
+        } else {
+            ui.available_width()
+        };
+        let pad_action = ui
+            .horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.allocate_ui(vec2(editor_w, editor_h), |ui| {
+                    self.editor(ui, editor_h, error_line, next, running);
+                });
+                if with_pad {
+                    ui.allocate_ui(vec2(pad_w, editor_h), |ui| {
+                        ui.set_min_height(editor_h);
+                        let name = self.source.as_ref().map_or("", |(n, _)| n.as_str());
+                        let pcx = pad::PadContext {
+                            rescue: cx.rescue,
+                            held: cx.status.device.is_some(),
+                            busy: cx.status.busy,
+                            name_hint: name,
+                        };
+                        self.pad.ui(ui, &pcx)
+                    })
+                    .inner
+                } else {
+                    None
+                }
+            })
+            .inner;
+        if let Some(pad::PadAction::Insert(line)) = pad_action {
+            self.text = insert_after_line(&self.text, self.cursor_line, &line);
+            self.cursor_line += 1;
+            actions.push(Action::Log(format!(
+                "已插入 {line}（第 {} 行）",
+                self.cursor_line
+            )));
+        }
 
         // Footer: validation result.
         let (text, color) = match &parsed {
@@ -793,6 +849,18 @@ mod tests {
 
     /// The reported script: 9 steps on lines 2–8.
     const X200: &str = "# 1. 解锁\nwake; wait:500\nswipe:0,-700; wait:700\ntext:{pw}; enter; wait:2500\n# 2. 竖屏\nrot:0\n# 3. 对准\nmove:0.5,0.88";
+
+    #[test]
+    fn pad_points_go_on_their_own_line_after_the_cursor() {
+        assert_eq!(insert_after_line("a\nb\nc", 2, "X"), "a\nb\nX\nc");
+        assert_eq!(insert_after_line("a\nb", 9, "X"), "a\nb\nX", "past the end");
+        assert_eq!(insert_after_line("", 1, "X"), "X");
+        assert_eq!(
+            insert_after_line("a\n", 1, "X"),
+            "a\nX\n",
+            "keeps the final newline"
+        );
+    }
 
     #[test]
     fn run_labels_say_what_ran() {

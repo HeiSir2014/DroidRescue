@@ -460,6 +460,39 @@ struct Run {
 enum Cmd {
     Run(Run),
     Release,
+    /// The coordinate pad moved: hover at the latest [`Pointer`].
+    Pointer,
+}
+
+/// Where the coordinate pad wants the pen to hover.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pointer {
+    /// 1/10000 of the screen, as in `move:` / `click:`.
+    pub x: u16,
+    pub y: u16,
+    /// The pad's rotation; the scripts' rotation state is not touched.
+    pub rotation: u8,
+    /// Take the device first if none is held (the 接管设备 button);
+    /// plain moves never open it, so they cannot fail noisily.
+    pub connect: bool,
+}
+
+/// The latest pointer request: a new one replaces an unsent one, so a
+/// fast-moving mouse never builds a backlog.
+#[derive(Default)]
+struct PointerSlot(Mutex<Option<Pointer>>);
+
+impl PointerSlot {
+    fn put(&self, p: Pointer) {
+        let mut slot = self.0.lock().unwrap();
+        // A connect request survives being overtaken by a plain move.
+        let connect = p.connect || slot.is_some_and(|old| old.connect);
+        *slot = Some(Pointer { connect, ..p });
+    }
+
+    fn take(&self) -> Option<Pointer> {
+        self.0.lock().unwrap().take()
+    }
 }
 
 /// Error text of a run cancelled with [`Rescue::stop`].
@@ -472,6 +505,7 @@ pub struct Rescue {
     targets: Arc<Mutex<Vec<UsbTarget>>>,
     /// Stop epoch: bumped by [`Rescue::stop`].
     stop: Arc<AtomicU64>,
+    pointer: Arc<PointerSlot>,
 }
 
 /// What the worker thread shares with the UI.
@@ -479,6 +513,7 @@ struct Worker {
     status: Arc<Mutex<Status>>,
     targets: Arc<Mutex<Vec<UsbTarget>>>,
     stop: Arc<AtomicU64>,
+    pointer: Arc<PointerSlot>,
     log: LogFn,
 }
 
@@ -496,10 +531,12 @@ impl Rescue {
         }));
         let targets = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicU64::new(0));
+        let pointer = Arc::new(PointerSlot::default());
         let shared = Worker {
             status: status.clone(),
             targets: targets.clone(),
             stop: stop.clone(),
+            pointer: pointer.clone(),
             log,
         };
         thread::spawn(move || worker(rx, shared));
@@ -508,7 +545,15 @@ impl Rescue {
             status,
             targets,
             stop,
+            pointer,
         }
+    }
+
+    /// Hover the pen at `p` (coordinate pad). Latest wins: calls faster than
+    /// the device takes them collapse into the newest position.
+    pub fn pointer(&self, p: Pointer) {
+        self.pointer.put(p);
+        let _ = self.tx.send(Cmd::Pointer);
     }
 
     /// Set after (re)loading the profiles.
@@ -627,6 +672,32 @@ fn worker(rx: Receiver<Cmd>, w: Worker) {
             Err(RecvTimeoutError::Disconnected) => return,
         };
         match cmd {
+            // Already sent by an earlier wake-up (latest wins).
+            Cmd::Pointer => {
+                let Some(p) = w.pointer.take() else { continue };
+                if held.is_none() && p.connect {
+                    let targets = w.targets.lock().unwrap().clone();
+                    match connect(&targets, log) {
+                        Ok(aoa) => {
+                            log(format!("✔ 救援: 已接管 {}", aoa.description));
+                            last_parent = aoa.parent().to_string();
+                            held = Some(aoa);
+                        }
+                        Err(e) => {
+                            w.status.lock().unwrap().needs_setup =
+                                e.contains(crate::usbdev::NOT_FOUND);
+                            log(format!("✘ 救援/接管: {e}"));
+                        }
+                    }
+                }
+                if let Some(aoa) = &held
+                    && let Err(e) = aoa.hover(frac(p.x), frac(p.y), p.rotation)
+                {
+                    log(format!("✘ 救援/悬停: {e}"));
+                    held = None; // gone or re-enumerated
+                }
+                set(&held, false, rotation);
+            }
             Cmd::Release => {
                 if held.take().is_some() {
                     log("救援: 已释放平板".into());
@@ -941,6 +1012,33 @@ fn run_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pointer(x: u16, connect: bool) -> Pointer {
+        Pointer {
+            x,
+            y: 0,
+            rotation: 1,
+            connect,
+        }
+    }
+
+    #[test]
+    fn pointer_requests_collapse_to_the_latest() {
+        let slot = PointerSlot::default();
+        for x in [1, 2, 3] {
+            slot.put(pointer(x, false));
+        }
+        assert_eq!(slot.take(), Some(pointer(3, false)));
+        assert_eq!(slot.take(), None, "taken once");
+    }
+
+    #[test]
+    fn a_connect_request_survives_later_moves() {
+        let slot = PointerSlot::default();
+        slot.put(pointer(1, true));
+        slot.put(pointer(2, false));
+        assert_eq!(slot.take(), Some(pointer(2, true)));
+    }
 
     const OLD: &str = r"USB\VID_2D95&PID_6012\SER0123456789AB";
     const NEW: &str = r"USB\VID_2D95&PID_6013\SER0123456789AB";
