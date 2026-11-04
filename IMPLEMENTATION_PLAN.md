@@ -296,7 +296,12 @@ traffic keeps the device from the idle release. UI sends ≤ 30/s, only on
 change.
 **Tests**: normalise (clamp, rotation-independent), pad size per
 aspect/rotation, coordinate formatting, command text, insert after a line;
-pointer coalescing (latest wins).
+pointer coalescing (latest wins); ignored device test
+`device_pointer_takes_the_device_and_hovers`.
+**Done**: pad, readout, pin, insert / copy, sync + 接管设备; checked on the
+Mac (hover readout, pin, insert after the cursor line).
+**Pending**: live hover on a real device (phone was unplugged): run the
+device test / try it in the app.
 **Status**: In Progress
 
 ## Stage 5b: Window/rail stability

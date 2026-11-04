@@ -1032,6 +1032,56 @@ mod tests {
         assert_eq!(slot.take(), None, "taken once");
     }
 
+    /// Device check for the coordinate pad: take the plugged-in device and
+    /// hover (never tap) at a few points through the pointer channel.
+    /// `DROIDRESCUE_USB_TARGETS="2D95:6013:00,2D95:6013:01" cargo test
+    /// device_pointer -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn device_pointer_takes_the_device_and_hovers() {
+        let list = std::env::var("DROIDRESCUE_USB_TARGETS").expect("targets");
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = lines.clone();
+        let rescue = Rescue::spawn(Arc::new(move |l: String| {
+            eprintln!("{l}");
+            sink.lock().unwrap().push(l);
+        }));
+        rescue.set_targets(UsbTarget::parse_list(&list).expect("valid targets"));
+        let wait_idle = || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            thread::sleep(Duration::from_millis(300));
+            while Instant::now() < deadline && rescue.status.lock().unwrap().device.is_none() {
+                thread::sleep(Duration::from_millis(100));
+            }
+        };
+        rescue.pointer(Pointer {
+            x: 5000,
+            y: 5000,
+            rotation: 0,
+            connect: true,
+        });
+        wait_idle();
+        assert!(
+            rescue.status.lock().unwrap().device.is_some(),
+            "not taken: {:?}",
+            lines.lock().unwrap()
+        );
+        // A burst like a fast mouse: collapses, never errors.
+        for i in 0..=50u16 {
+            rescue.pointer(Pointer {
+                x: 2000 + i * 120,
+                y: 8800,
+                rotation: 0,
+                connect: false,
+            });
+            thread::sleep(Duration::from_millis(10));
+        }
+        thread::sleep(Duration::from_millis(500));
+        let log = lines.lock().unwrap();
+        assert!(!log.iter().any(|l| l.starts_with('✘')), "{log:?}");
+        assert!(rescue.status.lock().unwrap().device.is_some());
+    }
+
     #[test]
     fn a_connect_request_survives_later_moves() {
         let slot = PointerSlot::default();
