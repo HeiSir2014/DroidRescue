@@ -31,6 +31,7 @@ impl PadApp {
                         .inner;
                     if changed {
                         ui.ctx().set_theme(preference);
+                        crate::apply_window_theme(ui.ctx(), preference);
                     }
                 });
                 card(ui, Some("数据"), |ui| {

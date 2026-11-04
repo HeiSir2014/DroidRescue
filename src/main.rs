@@ -73,6 +73,9 @@ const MAX_LOG_LINES: usize = 500;
 /// title bar: content drawn under a transparent one gets partly covered by
 /// the system's title-bar layer (the app name showed only a sliver).
 const CAPTION_H: f32 = if OWN_CAPTION { 40.0 } else { 0.0 };
+// Our caption exactly where the window has no native title bar.
+const _: () = assert!(OWN_CAPTION == (CAPTION_H > 0.0));
+const _: () = assert!(OWN_CAPTION != cfg!(target_os = "macos"));
 const RESIZE_BORDER: f32 = 6.0;
 /// First-launch window: sidebar + a comfortable page.
 const DEFAULT_SIZE: [f32; 2] = [1120.0, 780.0];
@@ -205,13 +208,21 @@ fn app_icon() -> egui::IconData {
 
 /// Window decorations. Windows: none — egui paints the caption and frame,
 /// chrome.rs hit-tests them natively. macOS: the standard native window
-/// (title bar with the app name, traffic lights, light/dark from the system).
+/// (title bar with the app name and traffic lights; its light/dark follows
+/// the app's theme setting, see [`apply_window_theme`]).
 fn native_chrome(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
-    if OWN_CAPTION {
-        builder.with_decorations(false)
-    } else {
-        builder
-    }
+    builder.with_decorations(!OWN_CAPTION)
+}
+
+/// The OS-drawn window parts (macOS title bar) follow the app's theme
+/// choice, not only the system's, so title bar and content always match.
+fn apply_window_theme(ctx: &egui::Context, preference: egui::ThemePreference) {
+    let theme = match preference {
+        egui::ThemePreference::System => egui::SystemTheme::SystemDefault,
+        egui::ThemePreference::Light => egui::SystemTheme::Light,
+        egui::ThemePreference::Dark => egui::SystemTheme::Dark,
+    };
+    ctx.send_viewport_cmd(ViewportCommand::SetTheme(theme));
 }
 
 /// We draw the title bar, frame and window buttons ourselves (Windows,
@@ -557,6 +568,43 @@ impl PadApp {
             idle_width: DEFAULT_SIZE[0],
             sized_once: false,
             settle: 0,
+        }
+    }
+
+    /// Lamp + one-line device status (caption on Windows, sidebar on macOS).
+    fn device_status(&self, snap: &Snapshot) -> nav::Status {
+        let c = theme::c();
+        let live = self.session().is_some();
+        let selected = snap
+            .devices
+            .iter()
+            .find(|d| Some(&d.serial) == snap.selected.as_ref());
+        let unauthorized = snap.devices.iter().any(|d| d.state == "unauthorized");
+        let (lamp, text) = if let Some(task) = snap.tasks.first() {
+            (c.amber, format!("{task}…"))
+        } else if matches!(self.mirror, MirrorState::Connecting(_)) {
+            (c.amber, "CONNECTING…".to_string())
+        } else if let Some(d) = selected {
+            let name = snap.name_of(d);
+            if live {
+                (c.amber, format!("{name} · LIVE"))
+            } else {
+                (c.green, name)
+            }
+        } else if unauthorized {
+            (c.red, "未授权 · 请在设备上允许 USB 调试".to_string())
+        } else {
+            (c.text_faint, "OFFLINE".to_string())
+        };
+        let text_color = if lamp == c.green || lamp == c.text_faint {
+            c.text_dim
+        } else {
+            lamp
+        };
+        nav::Status {
+            lamp,
+            text,
+            text_color,
         }
     }
 
@@ -920,8 +968,22 @@ impl PadApp {
     /// Draws our title bar (Windows; non-client, hit-tested by chrome.rs);
     /// returns the left x of the caption controls.
     fn caption(&mut self, ui: &mut egui::Ui, snap: &Snapshot, maximized: bool) -> f32 {
-        let (rect, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), CAPTION_H), egui::Sense::hover());
+        let (rect, drag) = ui.allocate_exact_size(
+            vec2(ui.available_width(), CAPTION_H),
+            egui::Sense::click_and_drag(),
+        );
+        // Normally the caption is non-client (chrome.rs hit-testing) and no
+        // pointer events reach egui. Without a Win32 handle chrome.rs is not
+        // installed: move / zoom the undecorated window from here instead.
+        if self.hwnd == 0 {
+            if drag.drag_started() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+            }
+            if drag.double_clicked() {
+                ui.ctx()
+                    .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+            }
+        }
         let p = ui.painter();
         p.rect_filled(rect, 0.0, theme::c().surface);
         p.line_segment(
@@ -937,55 +999,10 @@ impl PadApp {
             theme::strong_font(15.0),
             theme::c().amber,
         );
-        // The English name lives in the OS window title (taskbar, Alt-Tab):
-        // the 340 px rail has no room for both next to the status.
-        let sub = mark;
-
-        let ready = snap.selected.is_some();
-        let unauthorized = snap.devices.iter().any(|d| d.state == "unauthorized");
-        let live = self.session().is_some();
-        let lamp = if live {
-            theme::c().amber
-        } else if ready {
-            theme::c().green
-        } else if unauthorized {
-            theme::c().red
-        } else {
-            theme::c().text_faint
-        };
-        let lamp_c = pos2(sub.right() + 14.0, y);
-        p.circle_filled(lamp_c, 6.0, lamp.gamma_multiply(0.18));
-        p.circle_filled(lamp_c, 3.0, lamp);
-        let status = if let Some(task) = snap.tasks.first() {
-            format!("{task}…")
-        } else if matches!(self.mirror, MirrorState::Connecting(_)) {
-            "CONNECTING…".into()
-        } else if let Some(d) = snap
-            .devices
-            .iter()
-            .find(|d| Some(&d.serial) == snap.selected.as_ref())
-        {
-            let name = snap.name_of(d);
-            if live {
-                format!("{name} · LIVE")
-            } else {
-                name
-            }
-        } else {
-            "OFFLINE".into()
-        };
-        let color = if snap.tasks.is_empty() && !live {
-            theme::c().text_dim
-        } else {
-            theme::c().amber
-        };
-        p.text(
-            pos2(lamp_c.x + 10.0, y),
-            Align2::LEFT_CENTER,
-            status,
-            theme::mono(10.5),
-            color,
-        );
+        // The English name lives in the OS window title (taskbar, Alt-Tab).
+        let status = self.device_status(snap);
+        let lamp_c = pos2(mark.right() + 14.0, y);
+        nav::paint_status(p, lamp_c, &status);
 
         let mut controls_left = rect.right();
         let builder = egui::UiBuilder::new()
@@ -1500,7 +1517,11 @@ impl eframe::App for PadApp {
                     nav::NAV_W
                 };
                 let (nav_rect, page_rect) = split_body(body, nav_w);
-                if let Some(page) = nav::sidebar(ui, nav_rect, self.page, compact) {
+                // Our caption shows the device status; without one (macOS)
+                // the sidebar does.
+                let status = (!OWN_CAPTION).then(|| self.device_status(&snap));
+                if let Some(page) = nav::sidebar(ui, nav_rect, self.page, compact, status.as_ref())
+                {
                     self.page = page;
                 }
                 let log_h = if self.log_open {
@@ -1643,6 +1664,8 @@ fn main() -> eframe::Result {
                 }
                 Err(e) => log(&app.shared, format!("✘ 迁移旧版 padctl 数据失败: {e}")),
             }
+            // The persisted choice also applies to the OS-drawn title bar.
+            apply_window_theme(&cc.egui_ctx, cc.egui_ctx.options(|o| o.theme_preference));
             Ok(Box::new(app))
         }),
     )
