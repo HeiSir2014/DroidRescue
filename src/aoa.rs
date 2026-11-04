@@ -216,6 +216,17 @@ impl Aoa {
         &self.dev.parent
     }
 
+    /// Does the device still answer on this connection? (A harmless AOA
+    /// protocol query.) False after it re-enumerated for a USB mode switch.
+    pub fn alive(&self) -> bool {
+        let mut buf = [0u8; 2];
+        matches!(
+            self.dev
+                .control(VENDOR_IN, REQ_GET_PROTOCOL, 0, 0, &mut buf),
+            Ok(2)
+        )
+    }
+
     /// The device (via one of the profiles' rescue `targets`), if it speaks
     /// AOA ≥ 2. Refuses when more than one prepared device is attached, or
     /// when `serial` differs.

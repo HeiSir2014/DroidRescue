@@ -115,7 +115,7 @@ impl Default for Workbench {
 /// Parse for validation: `{pw}` stands in as a dummy so a missing password
 /// is not a syntax error.
 fn validate(text: &str) -> Result<Vec<Located>, ScriptError> {
-    rescue::parse_located(text, &[("pw", "0")])
+    rescue::parse_located(text, &[("pw", rescue::PW_PLACEHOLDER)])
 }
 
 /// Lines the next step / the running step are on.

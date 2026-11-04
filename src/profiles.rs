@@ -184,7 +184,7 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
             return Err(format!("[{}] 缺少 unlock", p.name));
         }
         for script in std::iter::once(&p.unlock).chain(p.enable.as_ref()) {
-            rescue::parse(script, &[("pw", "0")])
+            rescue::parse(script, &[("pw", rescue::PW_PLACEHOLDER)])
                 .map_err(|e| format!("[{}] 脚本错误: {e}", p.name))?;
         }
     }
