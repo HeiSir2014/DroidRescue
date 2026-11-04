@@ -151,9 +151,11 @@ fn e2e_backup_copies_device_folders() {
     let _ = std::fs::remove_dir_all(&dest);
 
     let lines = std::sync::Mutex::new(Vec::new());
-    let copied = adb::backup(&tools, Some(&serial), &dest, &|l| {
+    let result = adb::backup(&tools, Some(&serial), &dest, &|l| {
         lines.lock().unwrap().push(l)
     });
+    let copied = result.copied;
+    assert_eq!(result.failed, 0, "log: {:?}", lines.lock().unwrap());
     let _ = tools.shell(Some(&serial), &format!("rm -f {remote}"));
     let got = std::fs::read_to_string(dest.join("Download").join(&marker));
     let _ = std::fs::remove_dir_all(&dest);

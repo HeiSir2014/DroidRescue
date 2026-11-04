@@ -112,7 +112,9 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn open() -> Result<Player, String> {
+    /// `log` hears the first stream error (device unplugged, …) — once, so
+    /// a dead device can't flood the log from the audio callback.
+    pub fn open(log: crate::mirror::LogFn) -> Result<Player, String> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -131,11 +133,16 @@ impl Player {
         let rate = config.sample_rate;
         let buffer = Arc::new(Mutex::new(Buffer::new(rate)));
         let cb_buffer = buffer.clone();
+        let reported = std::sync::atomic::AtomicBool::new(false);
         let stream = device
             .build_output_stream(
                 config,
                 move |out: &mut [f32], _| cb_buffer.lock().unwrap().render(out, channels),
-                |_err| {},
+                move |err| {
+                    if !reported.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        log(format!("✘ 声音输出出错（投屏继续，可能没有声音）: {err}"));
+                    }
+                },
                 Some(Duration::from_secs(2)),
             )
             .map_err(|e| format!("打开音频输出失败: {e}"))?;

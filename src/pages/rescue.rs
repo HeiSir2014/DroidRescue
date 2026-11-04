@@ -282,10 +282,14 @@ impl PadApp {
             .on_hover_text("使用 Windows 自带、微软签名的 WinUsb 驱动，只作用于机型配置里声明的救援接口（如 Pad3 的虚拟光驱接口）；MTP 文件传输不受影响。设备需插着。开始救援时也会自动请求。")
             .clicked()
         {
-            match usbhost::install_elevated(&profiles::usb_targets(&self.profiles)) {
-                Ok(()) => log(&self.shared, "… 已请求管理员权限安装 WinUSB，结果见日志"),
-                Err(e) => log(&self.shared, format!("✘ {e}")),
-            }
+            // Waits for the UAC prompt and the install: off the UI thread.
+            let targets = profiles::usb_targets(&self.profiles);
+            let shared = self.shared.clone();
+            log(&shared, "… 正在请求管理员权限安装 WinUSB —— 请在电脑上点“是”");
+            std::thread::spawn(move || match usbhost::install_elevated(&targets) {
+                Ok(()) => log(&shared, "✔ WinUSB 已安装，可以开始救援"),
+                Err(e) => log(&shared, format!("✘ {e}")),
+            });
         }
     }
 }

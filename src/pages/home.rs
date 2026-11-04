@@ -44,7 +44,19 @@ impl PadApp {
                     _ => c.text_faint,
                 };
                 let text = RichText::new(format!("●  {}", snap.name_of(d))).color(color);
-                let resp = ui.add_enabled(d.is_ready(), egui::Button::selectable(selected, text));
+                // While mirroring, switching would leave the mirror on the old
+                // device and send unlock / tools to the new one.
+                let locked = self.mirroring() && !selected;
+                let resp = ui
+                    .add_enabled(
+                        d.is_ready() && !locked,
+                        egui::Button::selectable(selected, text),
+                    )
+                    .on_disabled_hover_text(if locked {
+                        "投屏中：先停止投屏再切换设备"
+                    } else {
+                        "设备未就绪（未授权或离线）"
+                    });
                 if resp.clicked() {
                     self.shared.lock().unwrap().selected = Some(d.serial.clone());
                 }

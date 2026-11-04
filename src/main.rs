@@ -125,7 +125,7 @@ struct Shared {
     /// adb serial → hardware serial (`ro.serialno`), stable across USB/WiFi.
     device_ids: HashMap<String, String>,
     /// adb serial → highest panel refresh rate the device supports.
-    device_hz: HashMap<String, f32>,
+    device_hz: HashMap<String, Option<f32>>,
     /// adb serial → friendly name ("vivo Pad3" rather than "PA2455").
     friendly: HashMap<String, String>,
     awake: Option<bool>,
@@ -325,13 +325,15 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
                     .insert(ser.to_string(), id);
             }
 
+            // Asked once per device: a device without the line would
+            // otherwise run dumpsys on every poll.
             if let Some(ser) = serial.as_deref()
                 && !shared.lock().unwrap().device_hz.contains_key(ser)
-                && let Some(hz) = tools
+            {
+                let hz = tools
                     .shell(Some(ser), adb::REFRESH_CMD)
                     .ok()
-                    .and_then(|o| adb::parse_max_refresh(&o))
-            {
+                    .and_then(|o| adb::parse_max_refresh(&o));
                 shared.lock().unwrap().device_hz.insert(ser.to_string(), hz);
             }
 
@@ -514,6 +516,9 @@ struct PadApp {
     sized_once: bool,
     /// Frames left before the window size is trusted again after a resize.
     settle: u8,
+    /// Fit the window to the picture next frame (after the compact minimum
+    /// size has been applied).
+    fit_pending: bool,
 }
 
 impl PadApp {
@@ -595,6 +600,7 @@ impl PadApp {
             idle_width: DEFAULT_SIZE[0],
             sized_once: false,
             settle: 0,
+            fit_pending: false,
         }
     }
 
@@ -843,9 +849,15 @@ impl PadApp {
         let mut opts = self.opts.clone();
         // Capture at most min(panel, monitor) fps: extra frames would only
         // cost encode time and bandwidth without ever being shown.
-        let device_hz = serial
-            .as_ref()
-            .and_then(|s| self.shared.lock().unwrap().device_hz.get(s).copied());
+        let device_hz = serial.as_ref().and_then(|s| {
+            self.shared
+                .lock()
+                .unwrap()
+                .device_hz
+                .get(s)
+                .copied()
+                .flatten()
+        });
         let monitor_hz = (self.hwnd != 0)
             .then(|| chrome::monitor_refresh_hz(self.hwnd))
             .flatten();
@@ -879,14 +891,39 @@ impl PadApp {
                 repaint,
             ));
         });
-        self.mirror = MirrorState::Connecting(rx);
+        self.replace_mirror(MirrorState::Connecting(rx));
         self.fps = FpsMeter::default();
     }
 
     fn stop_mirror(&mut self) {
         if !matches!(self.mirror, MirrorState::Idle) {
-            self.mirror = MirrorState::Idle; // drops the session: sockets, server, tunnel
+            self.replace_mirror(MirrorState::Idle);
             log(&self.shared, "■ 投屏已停止");
+        }
+    }
+
+    /// Ending a session joins its threads, kills the server and removes the
+    /// tunnel (adb round trips): done on a thread so the UI never stalls.
+    /// A dropped `Connecting` receiver makes the connecting thread drop the
+    /// session it is about to deliver.
+    fn replace_mirror(&mut self, next: MirrorState) {
+        if let MirrorState::Running(old) = std::mem::replace(&mut self.mirror, next) {
+            thread::spawn(move || drop(old));
+        }
+    }
+
+    /// On exit nothing may outlive the process half-done: the panel must be
+    /// back on and the tunnel gone, so end the session here and now, and
+    /// give a connection in progress a moment to arrive and be ended too.
+    fn end_mirror_now(&mut self) {
+        match std::mem::replace(&mut self.mirror, MirrorState::Idle) {
+            MirrorState::Running(session) => drop(session),
+            MirrorState::Connecting(rx) => {
+                if let Ok(Ok(session)) = rx.recv_timeout(Duration::from_secs(3)) {
+                    drop(session);
+                }
+            }
+            MirrorState::Idle => {}
         }
     }
 
@@ -913,7 +950,7 @@ impl PadApp {
             MirrorState::Idle => None,
         };
         if let Some(n) = next {
-            self.mirror = n;
+            self.replace_mirror(n);
         }
     }
 
@@ -982,11 +1019,8 @@ impl PadApp {
     fn backup(&self) {
         let dest = std::path::PathBuf::from(&self.backup_dir);
         self.run_task("备份", move |t, ser, sh| {
-            let copied = adb::backup(t, ser, &dest, &|line| log(sh, line));
-            log(
-                sh,
-                format!("✔ 导出完成（{copied} 个文件夹）→ {}", dest.display()),
-            );
+            let result = adb::backup(t, ser, &dest, &|line| log(sh, line));
+            log(sh, result.summary(&dest));
         });
     }
 
@@ -1244,6 +1278,12 @@ impl PadApp {
     /// Resize horizontally without moving the rail on screen (the stage opens
     /// or closes on the far side) — no jump under the user's cursor.
     fn set_width(&mut self, ctx: &egui::Context, width: f32) {
+        // A maximized window keeps its size: resizing it would leave a
+        // window that is no longer full-screen yet still in the maximized
+        // state (Restore button, no resize edges).
+        if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+            return;
+        }
         self.settle = RESIZE_SETTLE_FRAMES;
         if self.hwnd != 0 {
             let px = (width * ctx.pixels_per_point()).round() as i32;
@@ -1349,16 +1389,29 @@ fn forward_input(
                 key,
                 pressed,
                 repeat,
+                modifiers,
                 ..
             } if st.focused => {
-                if let Some(code) = input::android_keycode(*key) {
+                if let Some(code) = input::android_keycode(*key, *modifiers) {
                     let action = if *pressed {
                         KeyAction::Down
                     } else {
                         KeyAction::Up
                     };
-                    s.send(&control::keycode(action, code, u32::from(*repeat), 0));
+                    let meta = input::metastate(*modifiers);
+                    s.send(&control::keycode(action, code, u32::from(*repeat), meta));
                 }
+            }
+            // The PC turns Ctrl+C / Ctrl+X into these instead of keys.
+            egui::Event::Copy | egui::Event::Cut if st.focused => {
+                let code = if matches!(ev, egui::Event::Copy) {
+                    31
+                } else {
+                    52
+                }; // C / X
+                let meta = input::metastate(egui::Modifiers::CTRL);
+                s.send(&control::keycode(KeyAction::Down, code, 0, meta));
+                s.send(&control::keycode(KeyAction::Up, code, 0, meta));
             }
             _ => {}
         }
@@ -1486,12 +1539,19 @@ impl eframe::App for PadApp {
             )));
         }
         if compact && !self.was_compact {
+            // Fit next frame: the lower minimum size above is applied after
+            // this frame, and Windows clamps a resize to the minimum in force
+            // (the picture would sit in a page-wide window).
+            self.fit_pending = true;
+            ctx.request_repaint();
+        } else if compact && std::mem::take(&mut self.fit_pending) {
             // No stream yet: best guess from the model and current rotation;
             // the stage refits once the first frame reveals the real shape.
             let model = skin::Model::for_device(snap.selected_model(), (0, 0), snap.orientation);
             let extent = model.extent(skin::turns_for(&model, snap.orientation, None));
             self.fit_window(&ctx, self.last_extent.unwrap_or(extent));
         } else if !compact && self.was_compact {
+            self.fit_pending = false;
             self.set_width(&ctx, self.idle_width);
             self.last_extent = None;
         }
@@ -1577,7 +1637,7 @@ impl eframe::App for PadApp {
     }
 
     fn on_exit(&mut self) {
-        self.stop_mirror();
+        self.end_mirror_now();
     }
 }
 
@@ -1615,9 +1675,13 @@ fn main() -> eframe::Result {
     if std::env::args().nth(1).as_deref() == Some(usbhost::INSTALL_FLAG) {
         let shared: SharedRef = Arc::default();
         let targets = usbid::UsbTarget::parse_list(&std::env::args().nth(2).unwrap_or_default());
+        // The exit code is the result the waiting parent reports.
         match targets.and_then(|t| usbhost::install(&t)) {
             Ok(ids) => log(&shared, format!("✔ WinUSB 已安装到 {}", ids.join(", "))),
-            Err(e) => log(&shared, format!("✘ WinUSB 安装失败: {e}")),
+            Err(e) => {
+                log(&shared, format!("✘ WinUSB 安装失败: {e}"));
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }

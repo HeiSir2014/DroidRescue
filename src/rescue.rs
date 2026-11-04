@@ -593,7 +593,7 @@ fn connect(targets: &[UsbTarget], log: &LogFn) -> Result<Aoa, String> {
             return open(targets);
         }
     }
-    Err("等待 WinUSB 安装超时（管理员授权被拒绝？详情见日志）".into())
+    Err("WinUSB 已安装，但设备没有就绪：请重新插拔数据线后再试".into())
 }
 
 fn worker(rx: Receiver<Cmd>, w: Worker) {

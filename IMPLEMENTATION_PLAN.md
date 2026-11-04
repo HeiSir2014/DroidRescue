@@ -199,8 +199,9 @@ Window minimum width = rail width (+ stage while mirroring).
 ## Stage 11: macOS port (Mac mini, ~/Documents/projects/DroidRescue)
 **Goal**: same crate, platform modules behind `cfg`: VideoToolbox decode →
 IOSurface → Metal texture (zero-copy, wgpu Metal hal); rescue AOA through
-IOKit/libusb (no driver binding on macOS); Keychain for PINs; native
-titlebar with full-size content view; bundled darwin adb; signed .app/.dmg
+IOKit/libusb (no driver binding on macOS); Keychain for PINs; plain
+native title bar (a full-size content view hid the drawn caption under the
+title-bar layer); bundled darwin adb; signed .app/.dmg
 via CI macos-latest.
 **Tests**: core tests pass on macOS; mirror + rescue on device.
 **Done**: platform modules (`src/macos/`: usbhost/usbdev via nusb, chrome,

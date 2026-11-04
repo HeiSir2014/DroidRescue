@@ -55,6 +55,24 @@ pub fn quote_input_text(text: &str) -> String {
     format!("'{escaped}'")
 }
 
+/// `input text` commands that type `text` exactly. `input` turns `%s` into
+/// a space, so a literal `%` followed by `s` is split across two commands.
+pub fn input_text_commands(text: &str) -> Vec<String> {
+    let mut chunks: Vec<String> = vec![String::new()];
+    for ch in text.chars() {
+        let current = chunks.last_mut().expect("never empty");
+        if ch == 's' && current.ends_with('%') {
+            chunks.push(String::new());
+        }
+        chunks.last_mut().expect("never empty").push(ch);
+    }
+    chunks
+        .iter()
+        .filter(|c| !c.is_empty())
+        .map(|c| format!("input text {}", quote_input_text(c)))
+        .collect()
+}
+
 /// Extract the IPv4 address from `ip -f inet addr show wlan0`.
 pub fn parse_wlan_ip(out: &str) -> Option<String> {
     let rest = out.split("inet ").nth(1)?;
@@ -264,27 +282,37 @@ pub fn outcome(success: bool, output: &str) -> Result<String, String> {
 
 /// The adb-input unlock sequence (wake, swipe the keyguard, PIN, Enter),
 /// as (step name, shell command). The PIN is in the third command only.
-pub fn unlock_commands(password: &str) -> [(&'static str, String); 4] {
-    [
+pub fn unlock_commands(password: &str) -> Vec<(&'static str, String)> {
+    let mut cmds = vec![
         ("唤醒", "input keyevent 224".to_string()),
         ("上滑", SWIPE_UP_CMD.to_string()),
-        (
-            "输入密码",
-            format!("input text {}", quote_input_text(password)),
-        ),
-        ("回车", "input keyevent 66".to_string()),
-    ]
+    ];
+    cmds.extend(
+        input_text_commands(password)
+            .into_iter()
+            .map(|c| (PIN_STEP, c)),
+    );
+    cmds.push(("回车", "input keyevent 66".to_string()));
+    cmds
 }
+
+/// Name of the unlock step(s) that carry the PIN.
+const PIN_STEP: &str = "输入密码";
 
 /// Unlock with adb `input`, pausing for the keyguard's animations. Errors
 /// never contain the password.
 pub fn unlock(tools: &Tools, serial: Option<&str>, password: &str) -> Result<(), String> {
-    let secret = quote_input_text(password);
     for (name, cmd) in unlock_commands(password) {
-        tools
-            .shell(serial, &cmd)
-            .map_err(|e| format!("解锁/{name} 失败: {}", e.replace(&secret, "***")))?;
-        std::thread::sleep(std::time::Duration::from_millis(600));
+        tools.shell(serial, &cmd).map_err(|e| {
+            if name == PIN_STEP {
+                // The error quotes the command, i.e. the PIN: never log it.
+                format!("解锁/{name} 失败（adb 执行出错）")
+            } else {
+                format!("解锁/{name} 失败: {e}")
+            }
+        })?;
+        let pause = if name == PIN_STEP { 150 } else { 600 };
+        std::thread::sleep(std::time::Duration::from_millis(pause));
     }
     Ok(())
 }
@@ -302,13 +330,19 @@ pub const BACKUP_DIRS: [&str; 6] = [
 /// Copy [`BACKUP_DIRS`] from the device into `dest` (`adb pull -a`, keeps
 /// times). Folders the device does not have are skipped, not errors.
 /// Returns how many folders were copied.
-pub fn backup(tools: &Tools, serial: Option<&str>, dest: &Path, log: &dyn Fn(String)) -> usize {
+pub fn backup(
+    tools: &Tools,
+    serial: Option<&str>,
+    dest: &Path,
+    log: &dyn Fn(String),
+) -> BackupResult {
+    let mut result = BackupResult::default();
     if let Err(e) = std::fs::create_dir_all(dest) {
         log(format!("✘ 无法创建 {}: {e}", dest.display()));
-        return 0;
+        result.failed += 1;
+        return result;
     }
     let dest_str = dest.to_string_lossy();
-    let mut copied = 0;
     for dir in BACKUP_DIRS {
         let src = format!("/sdcard/{dir}");
         if tools.shell(serial, &format!("test -d {src}")).is_err() {
@@ -317,13 +351,38 @@ pub fn backup(tools: &Tools, serial: Option<&str>, dest: &Path, log: &dyn Fn(Str
         log(format!("… 导出 {src}"));
         match tools.run(serial, &["pull", "-a", &src, &dest_str]) {
             Ok(out) => {
-                copied += 1;
+                result.copied += 1;
                 log(format!("✔ 导出 {dir}: {out}"));
             }
-            Err(e) => log(format!("✘ 导出 {dir}: {e}")),
+            Err(e) => {
+                result.failed += 1;
+                log(format!("✘ 导出 {dir}: {e}"));
+            }
         }
     }
-    copied
+    result
+}
+
+/// Folders copied / failed by [`backup`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BackupResult {
+    pub copied: usize,
+    pub failed: usize,
+}
+
+impl BackupResult {
+    /// One log line for the whole export, never a ✔ when nothing (or not
+    /// everything) was copied.
+    pub fn summary(&self, dest: &Path) -> String {
+        match (self.copied, self.failed) {
+            (0, 0) => "✘ 导出：设备上没有可导出的文件夹".to_string(),
+            (n, 0) => format!("✔ 导出完成（{n} 个文件夹）→ {}", dest.display()),
+            (n, f) => format!(
+                "✘ 导出完成 {n} 个，失败 {f} 个（见上方日志）→ {}",
+                dest.display()
+            ),
+        }
+    }
 }
 
 /// Turn on adb over Wi-Fi (port 5555) and connect to it; returns `ip:5555`.
@@ -408,7 +467,29 @@ mod tests {
         assert_eq!(with_pin.len(), 1);
         assert_eq!(with_pin[0].1, "input text '12%s34'");
         assert_eq!(cmds[0].1, "input keyevent 224", "wake first");
-        assert_eq!(cmds[3].1, "input keyevent 66", "enter last");
+        assert_eq!(cmds.last().unwrap().1, "input keyevent 66", "enter last");
+    }
+
+    #[test]
+    fn backup_summary_only_reports_success_when_everything_copied() {
+        let dest = Path::new("/backup");
+        let r = |copied, failed| BackupResult { copied, failed }.summary(dest);
+        assert!(r(3, 0).starts_with('✔'));
+        assert!(r(0, 0).starts_with('✘'), "nothing exported");
+        assert!(r(2, 1).starts_with('✘'), "partial failure");
+        assert!(r(0, 2).starts_with('✘'));
+    }
+
+    /// `input text` reads `%s` as a space: a literal "%s" must not be.
+    #[test]
+    fn literal_percent_s_is_typed_as_typed() {
+        assert_eq!(
+            input_text_commands("ab%sc"),
+            ["input text 'ab%'", "input text 'sc'"]
+        );
+        assert_eq!(input_text_commands("a b"), ["input text 'a%sb'"]);
+        assert_eq!(input_text_commands("100%"), ["input text '100%'"]);
+        assert!(input_text_commands("").is_empty());
     }
 
     #[test]
