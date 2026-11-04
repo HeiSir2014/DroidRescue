@@ -309,6 +309,25 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
+/// A small rounded version tag ("v0.2.0") whose left edge is at
+/// `left_center`; returns its rect.
+pub fn version_tag(p: &egui::Painter, left_center: egui::Pos2, version: &str) -> Rect {
+    let c = theme::c();
+    let galley = p.layout_no_wrap(version.to_string(), theme::mono(10.5), c.text_dim);
+    let rect = Rect::from_min_size(
+        pos2(left_center.x, left_center.y - 9.0),
+        vec2(galley.size().x + 12.0, 18.0),
+    );
+    p.rect_filled(rect, 9.0, c.surface_hi);
+    p.rect_stroke(rect, 9.0, Stroke::new(1.0, c.line), StrokeKind::Inside);
+    p.galley(
+        pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        c.text_dim,
+    );
+    rect
+}
+
 /// Hairline frame around the whole window (the drawn "border").
 pub fn window_frame(ui: &Ui, active: bool) {
     let c = theme::c();
