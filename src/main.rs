@@ -213,6 +213,20 @@ fn app_icon() -> egui::IconData {
 /// Password for a blind unlock: typed > saved for this device (held /
 /// plugged-in USB serial, adb device) > the only saved password. May
 /// decrypt (DPAPI / Keychain): call when needed, not every frame.
+/// The device a script's `{pw}` belongs to: the one the rescue holds, else
+/// the single rescue-ready device plugged in, else the adb device.
+fn password_device_id(
+    held: Option<&str>,
+    usb_serials: &[String],
+    adb_device_id: Option<&str>,
+) -> Option<String> {
+    let plugged = match usb_serials {
+        [one] => Some(one.as_str()),
+        _ => None,
+    };
+    held.or(plugged).or(adb_device_id).map(str::to_string)
+}
+
 fn rescue_password_for(
     typed: &str,
     store: &secrets::PasswordStore,
@@ -1938,6 +1952,26 @@ mod tests {
         assert_eq!((nav_rect.left(), nav_rect.width()), (0.0, nav::NAV_W));
         assert_eq!((page.left(), page.right()), (nav::NAV_W, 1000.0));
         assert_eq!(page.top(), 40.0);
+    }
+
+    #[test]
+    fn script_password_belongs_to_the_held_then_plugged_then_adb_device() {
+        let one = vec!["USB1".to_string()];
+        let two = vec!["USB1".to_string(), "USB2".to_string()];
+        assert_eq!(
+            password_device_id(Some("HELD"), &one, Some("ADB")).as_deref(),
+            Some("HELD")
+        );
+        assert_eq!(
+            password_device_id(None, &one, Some("ADB")).as_deref(),
+            Some("USB1")
+        );
+        assert_eq!(
+            password_device_id(None, &two, Some("ADB")).as_deref(),
+            Some("ADB"),
+            "several plugged: not guessed"
+        );
+        assert_eq!(password_device_id(None, &[], None), None);
     }
 
     #[test]
