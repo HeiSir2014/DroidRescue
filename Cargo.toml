@@ -9,6 +9,9 @@ edition = "2024"
 cpal = "0.18.2"
 eframe = { version = "0.35.0", features = ["persistence"] }
 raw-window-handle = "0.6"
+# Font line metrics, read exactly as egui (epaint) reads them, to line up
+# baselines when Chinese and Latin come from different fonts.
+skrifa = "0.42"
 
 [build-dependencies]
 # Windows exe icon + version info (only invoked when the target is Windows).

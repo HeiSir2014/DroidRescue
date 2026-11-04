@@ -114,22 +114,23 @@ pub fn key(ui: &mut Ui, glyph: &str, label: &str, size: Vec2, enabled: bool) -> 
     };
     p.rect_filled(rect, R, fill);
     p.rect_stroke(rect, R, Stroke::new(1.0, stroke), StrokeKind::Inside);
-    let glyph_pos = pos2(rect.center().x, rect.top() + rect.height() * 0.42);
-    p.text(
-        glyph_pos,
-        Align2::CENTER_CENTER,
-        glyph,
-        theme::mono(17.0),
-        fg,
-    );
-    let label_pos = pos2(rect.center().x, rect.bottom() - 9.0);
-    p.text(
-        label_pos,
-        Align2::CENTER_CENTER,
-        label,
-        theme::mono(9.5),
-        if enabled { c.text_dim } else { c.text_faint },
-    );
+    // Glyph over caption, centred together by their real heights (fonts
+    // differ per platform, fixed offsets overlapped).
+    let label_color = if enabled { c.text_dim } else { c.text_faint };
+    // A lone symbol (◁ ○ ▢) has a small ink box: set it larger than words.
+    let glyph_size = if glyph.chars().count() == 1 {
+        20.0
+    } else {
+        15.0
+    };
+    let glyph = p.layout_no_wrap(glyph.to_string(), theme::mono(glyph_size), fg);
+    let label = p.layout_no_wrap(label.to_string(), theme::ui(11.0), label_color);
+    let gap = -1.0; // line boxes carry their own leading
+    let top = rect.center().y - (glyph.size().y + gap + label.size().y) / 2.0;
+    let centred = |w: f32| rect.center().x - w / 2.0;
+    let label_y = top + glyph.size().y + gap;
+    p.galley(pos2(centred(glyph.size().x), top), glyph, fg);
+    p.galley(pos2(centred(label.size().x), label_y), label, label_color);
     resp
 }
 
@@ -148,7 +149,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
         pos2(rect.left(), rect.center().y),
         Align2::LEFT_CENTER,
         label,
-        theme::mono(12.0),
+        theme::ui(12.5),
         fg,
     );
     resp
@@ -159,7 +160,7 @@ pub fn switch_inline(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let c = theme::c();
     let galley = ui
         .painter()
-        .layout_no_wrap(label.to_string(), theme::mono(11.0), c.text_dim);
+        .layout_no_wrap(label.to_string(), theme::ui(12.0), c.text_dim);
     let size = vec2(28.0 + 8.0 + galley.size().x, 22.0);
     let (rect, mut resp) = ui.allocate_exact_size(size, Sense::click());
     toggle_on_click(&mut resp, on);
@@ -207,7 +208,7 @@ pub fn link(ui: &mut Ui, text: &str) -> Response {
     let c = theme::c();
     let galley = ui
         .painter()
-        .layout_no_wrap(text.to_string(), theme::mono(10.5), c.text_dim);
+        .layout_no_wrap(text.to_string(), theme::ui(11.5), c.text_dim);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + vec2(4.0, 6.0), Sense::click());
     let color = if resp.hovered() { c.amber } else { c.text_dim };
     let pos = pos2(rect.left() + 2.0, rect.center().y - galley.size().y / 2.0);
@@ -247,7 +248,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
                 rect.center(),
                 Align2::CENTER_CENTER,
                 *label,
-                theme::mono(11.0),
+                theme::ui(12.0),
                 fg,
             );
             if resp

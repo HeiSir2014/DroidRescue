@@ -37,4 +37,4 @@ sh scripts/package-macos.sh     # macOS: dist/DroidRescue-<版本>-macos-arm64.d
 
 - [scrcpy](https://github.com/Genymobile/scrcpy)：设备端 scrcpy-server 与协议
 - Android platform-tools（adb）、FFmpeg
-- 字体：Maple Mono CN
+- 字体：Maple Mono（等宽，内置西文子集）；中文使用系统字体

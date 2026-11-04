@@ -215,7 +215,7 @@ impl PadApp {
         };
         ui.label(
             RichText::new(via)
-                .font(theme::mono(10.0))
+                .font(theme::ui(11.0))
                 .color(theme::c().text_faint),
         );
         ui.horizontal(|ui| {
@@ -227,7 +227,7 @@ impl PadApp {
                     }
                     ui.label(
                         RichText::new("● 已保存")
-                            .font(theme::mono(10.5))
+                            .font(theme::ui(11.5))
                             .color(theme::c().green),
                     );
                 });

@@ -48,7 +48,7 @@ impl PadApp {
             (None, true) => ("连接设备中…".to_string(), theme::c().amber),
             (None, false) => ("插上设备即可操作".to_string(), theme::c().text_dim),
         };
-        ui.label(RichText::new(text).font(theme::mono(10.5)).color(color));
+        ui.label(RichText::new(text).font(theme::ui(11.5)).color(color));
         if status.needs_setup {
             self.winusb_setup_link(ui);
         }
@@ -188,12 +188,16 @@ impl PadApp {
             )
             .color(theme::c().text_dim),
         );
-        if ui
-            .button(RichText::new("编写 / 调试机型脚本 →").color(theme::c().amber))
-            .clicked()
-        {
-            self.page = Page::Script;
-        }
+        // In a row: the card's justified layout would stretch it into
+        // something that looks like a text field.
+        ui.horizontal(|ui| {
+            if ui
+                .button(RichText::new("编写 / 调试机型脚本 →").color(theme::c().amber))
+                .clicked()
+            {
+                self.page = Page::Script;
+            }
+        });
         ui.horizontal_wrapped(|ui| {
             if widgets::link(ui, "用文本编辑器打开配置文件")
                 .on_hover_text(profiles::path().display().to_string())

@@ -68,6 +68,8 @@ use std::time::{Duration, Instant};
 use widgets::CaptionIcon;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Widest a page's content grows (pt); wider windows centre it.
+const MAX_PAGE_W: f32 = 1200.0;
 const MAX_LOG_LINES: usize = 500;
 /// Our own caption (title bar) height — Windows only. macOS uses the native
 /// title bar: content drawn under a transparent one gets partly covered by
@@ -643,6 +645,22 @@ impl PadApp {
 
     /// The current page (everything except the mirror view).
     fn page_content(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        // Readable line lengths and cards that stay together on wide or
+        // maximised windows: content is capped and centred (the mirror uses
+        // all the room it gets while live).
+        let full = ui.max_rect();
+        let live_mirror = self.page == nav::Page::Mirror && self.mirroring();
+        if !live_mirror && full.width() > MAX_PAGE_W {
+            let rect = Rect::from_center_size(full.center(), vec2(MAX_PAGE_W, full.height()));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                self.page_by_kind(ui, snap)
+            });
+        } else {
+            self.page_by_kind(ui, snap);
+        }
+    }
+
+    fn page_by_kind(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         match self.page {
             nav::Page::Home => self.home_page(ui, snap),
             nav::Page::Mirror => self.mirror_page(ui, snap),
@@ -688,7 +706,7 @@ impl PadApp {
                     if let Some(task) = snap.tasks.first() {
                         ui.label(
                             RichText::new(format!("● {task}…"))
-                                .font(theme::mono(10.5))
+                                .font(theme::ui(11.5))
                                 .color(c.amber),
                         );
                     }
@@ -698,7 +716,7 @@ impl PadApp {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(last)
-                                    .font(theme::mono(10.5))
+                                    .font(theme::ui(11.5))
                                     .color(color_of(last)),
                             )
                             .truncate(),
@@ -714,7 +732,7 @@ impl PadApp {
                             for line in &snap.log {
                                 ui.label(
                                     RichText::new(line)
-                                        .font(theme::mono(10.5))
+                                        .font(theme::ui(11.5))
                                         .color(color_of(line)),
                                 );
                             }
@@ -858,21 +876,20 @@ impl PadApp {
                 .copied()
                 .flatten()
         });
-        let monitor_hz = (self.hwnd != 0)
+        // Windows reads the window's monitor; macOS the main display.
+        let monitor_hz = (self.hwnd != 0 || !OWN_CAPTION)
             .then(|| chrome::monitor_refresh_hz(self.hwnd))
             .flatten();
         opts.max_fps = adb::capture_fps(device_hz, monitor_hz, self.opts.max_fps);
-        let hz = |v: Option<String>| v.unwrap_or_else(|| "?".into());
-        self.capture_info = format!(
-            "cap {} · pad {} Hz · monitor {} Hz",
-            if opts.max_fps == 0 {
-                "∞".to_string()
-            } else {
-                format!("{} fps", opts.max_fps)
-            },
-            hz(device_hz.map(|h| format!("{h:.0}"))),
-            hz(monitor_hz.map(|h| h.to_string())),
-        );
+        // Unknown rates are left out rather than shown as "?".
+        let mut parts = vec![if opts.max_fps == 0 {
+            "cap ∞".to_string()
+        } else {
+            format!("cap {} fps", opts.max_fps)
+        }];
+        parts.extend(device_hz.map(|h| format!("pad {h:.0} Hz")));
+        parts.extend(monitor_hz.map(|h| format!("monitor {h} Hz")));
+        self.capture_info = parts.join(" · ");
         log(&self.shared, format!("帧率策略: {}", self.capture_info));
         let shared = self.shared.clone();
         let log_fn: mirror::LogFn = Arc::new(move |line| log(&shared, line));

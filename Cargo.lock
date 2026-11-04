@@ -974,6 +974,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "raw-window-handle",
  "security-framework",
+ "skrifa",
  "windows",
  "windows-sys 0.59.0",
  "winresource",

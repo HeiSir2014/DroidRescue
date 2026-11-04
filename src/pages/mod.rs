@@ -49,7 +49,7 @@ pub fn tag(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
         .corner_radius(6)
         .inner_margin(Margin::symmetric(8, 3))
         .show(ui, |ui| {
-            ui.label(RichText::new(text).font(theme::mono(10.5)).color(color));
+            ui.label(RichText::new(text).font(theme::ui(11.5)).color(color));
         });
 }
 
