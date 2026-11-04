@@ -285,7 +285,7 @@ pub fn outcome(success: bool, output: &str) -> Result<String, String> {
 pub fn unlock_commands(password: &str) -> Vec<(&'static str, String)> {
     let mut cmds = vec![
         (WAKE_STEP, "input keyevent 224".to_string()),
-        ("上滑", SWIPE_UP_CMD.to_string()),
+        ("打开密码框", BOUNCER_CMD.to_string()),
     ];
     cmds.extend(
         input_text_commands(password)
@@ -430,12 +430,18 @@ pub fn enable_wireless(tools: &Tools, serial: Option<&str>) -> Result<String, St
     Err(format!("adb connect {target} 失败: {last}"))
 }
 
-/// Swipe up the keyguard on any device: vertical stroke along the short
-/// side of `wm size`, so it stays on screen in portrait and landscape
-/// (`input` coordinates follow the current rotation; `wm size` is natural).
-pub const SWIPE_UP_CMD: &str = "s=$(wm size | grep -oE '[0-9]+x[0-9]+' | tail -n 1); \
-    w=${s%x*}; h=${s#*x}; m=$(( w < h ? w : h )); \
-    input swipe $(( m / 2 )) $(( m * 8 / 10 )) $(( m / 2 )) $(( m * 2 / 10 )) 300";
+/// Bring up the PIN bouncer. `wm dismiss-keyguard` asks the system itself
+/// and works even while the screen is still turning on (a swipe sent then
+/// is lost: reproduced on the emulator right after sleep). The fallback,
+/// where the command doesn't exist, swipes up along the short side of
+/// `wm size`, so it stays on screen in portrait and landscape (`input`
+/// coordinates follow the current rotation; `wm size` is natural).
+pub const BOUNCER_CMD: &str = concat!(
+    "wm dismiss-keyguard 2>/dev/null || { ",
+    "s=$(wm size | grep -oE '[0-9]+x[0-9]+' | tail -n 1); ",
+    "w=${s%x*}; h=${s#*x}; m=$(( w < h ? w : h )); ",
+    "input swipe $(( m / 2 )) $(( m * 8 / 10 )) $(( m / 2 )) $(( m * 2 / 10 )) 300; }"
+);
 
 /// Android's default long-press timeout (ViewConfiguration.DEFAULT_LONG_PRESS_TIMEOUT).
 pub const LONG_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
