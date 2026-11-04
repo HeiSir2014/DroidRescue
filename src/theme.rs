@@ -97,6 +97,12 @@ pub fn strong_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("strong".into()))
 }
 
+/// Interface text at an explicit size (labels, captions, status lines).
+pub fn ui(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Proportional)
+}
+
+/// Code, ids, paths, numbers: Maple Mono for Latin (CJK from the UI font).
 pub fn mono(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
 }
@@ -176,52 +182,124 @@ fn visuals(theme: Theme, p: &Palette) -> Visuals {
 }
 
 fn install_fonts(ctx: &egui::Context) {
-    let mut fonts = FontDefinitions::default();
-    let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
-        fonts
-            .font_data
-            .insert(name.into(), Arc::new(FontData::from_static(bytes)));
-    };
     // Maple Mono, subset to Latin + symbols (no CJK): code, numbers, ids.
     // Its CJK glyphs fill only ~73% of a 1.2 em cell, so Chinese set in it
     // looked letter-spaced; Chinese always comes from the system UI font.
-    add(
-        &mut fonts,
-        "maple",
+    let maple = Face::new(
         include_bytes!("../assets/fonts/MapleMono-Regular-Latin.ttf"),
+        0,
     );
-    add(
-        &mut fonts,
-        "maple-sb",
+    let maple_sb = Face::new(
         include_bytes!("../assets/fonts/MapleMono-SemiBold-Latin.ttf"),
+        0,
     );
-    for (name, candidates) in [("ui", SYSTEM_UI), ("ui-bold", SYSTEM_UI_BOLD)] {
-        if let Some(data) = load_system_font(candidates) {
-            fonts.font_data.insert(name.into(), Arc::new(data));
-        }
-    }
+    let mut files = std::collections::HashMap::new();
+    let ui = load_system_font(SYSTEM_UI, &mut files);
+    let ui_bold = load_system_font(SYSTEM_UI_BOLD, &mut files).or(ui);
 
-    // Interface text: system UI font (native CJK + Latin), Maple only as a
-    // fallback; code: Maple for Latin, system font for any CJK; then egui's
-    // bundled symbol / emoji fonts.
+    // Interface text: system UI font (native CJK + Latin), Maple only for
+    // what it lacks; code: Maple for Latin, the system font for any CJK.
+    // Without a system font everything stays on Maple (+ egui's fonts).
+    let mut fonts = FontDefinitions::default();
     let egui_fallbacks = fonts
         .families
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
     for (family, chain) in [
-        (FontFamily::Proportional, ["ui", "maple"]),
-        (FontFamily::Name("strong".into()), ["ui-bold", "maple-sb"]),
-        (FontFamily::Monospace, ["maple", "ui"]),
+        (FontFamily::Proportional, [ui, maple]),
+        (FontFamily::Name("strong".into()), [ui_bold, maple_sb]),
+        (FontFamily::Monospace, [maple, ui]),
     ] {
-        let mut chain: Vec<String> = chain.iter().map(|s| s.to_string()).collect();
-        chain.extend(["ui".into(), "maple".into()]);
-        chain.extend(egui_fallbacks.iter().cloned());
-        let mut seen = std::collections::HashSet::new();
-        chain.retain(|name| fonts.font_data.contains_key(name) && seen.insert(name.clone()));
-        fonts.families.insert(family, chain);
+        let faces: Vec<Face> = chain.into_iter().flatten().collect();
+        let Some(&primary) = faces.first() else {
+            continue; // egui's defaults stay
+        };
+        let mut names = Vec::new();
+        for (i, face) in faces.iter().enumerate() {
+            // Each fallback is shifted onto the primary's baseline; the same
+            // font under a different primary needs its own entry.
+            let name = format!(
+                "{}#{} under {}#{}",
+                face.id(),
+                face.index,
+                primary.id(),
+                primary.index
+            );
+            let tweak = egui::epaint::text::FontTweak {
+                y_offset_factor: if i == 0 {
+                    0.0
+                } else {
+                    primary.line.shift_onto(face.line)
+                },
+                ..Default::default()
+            };
+            fonts.font_data.insert(
+                name.clone(),
+                Arc::new(FontData {
+                    font: std::borrow::Cow::Borrowed(face.bytes),
+                    index: face.index,
+                    tweak,
+                }),
+            );
+            names.push(name);
+        }
+        names.extend(egui_fallbacks.iter().cloned());
+        fonts.families.insert(family, names);
     }
     ctx.set_fonts(fonts);
+}
+
+/// One face of a font file, with the line metrics egui lays it out by.
+#[derive(Clone, Copy)]
+struct Face {
+    bytes: &'static [u8],
+    index: u32,
+    line: LineMetrics,
+}
+
+impl Face {
+    fn new(bytes: &'static [u8], index: u32) -> Option<Face> {
+        use skrifa::MetadataProvider;
+        let font = skrifa::FontRef::from_index(bytes, index).ok()?;
+        let m = font.metrics(
+            skrifa::instance::Size::unscaled(),
+            skrifa::instance::LocationRef::default(),
+        );
+        let em = f32::from(m.units_per_em.max(1));
+        Some(Face {
+            bytes,
+            index,
+            line: LineMetrics {
+                ascent: m.ascent / em,
+                height: (m.ascent - m.descent + m.leading) / em,
+            },
+        })
+    }
+
+    /// Stable key for the font data map (the bytes' address and length).
+    fn id(&self) -> String {
+        format!("{:p}+{}", self.bytes.as_ptr(), self.bytes.len())
+    }
+}
+
+/// Vertical metrics in em, as epaint reads them (ascent, and row height =
+/// ascent − descent + line gap).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LineMetrics {
+    ascent: f32,
+    height: f32,
+}
+
+impl LineMetrics {
+    /// `FontTweak::y_offset_factor` that puts a fallback face's baseline on
+    /// this (primary) face's. epaint places a fallback glyph's baseline at
+    /// `its ascent + (primary height − its height) / 2`, so faces with
+    /// different ascents / line gaps sit higher or lower than the primary
+    /// (Hiragino's 0.5 em line gap lifted CJK ~0.23 em above Maple digits).
+    fn shift_onto(self, fallback: LineMetrics) -> f32 {
+        self.ascent - (fallback.ascent + 0.5 * (self.height - fallback.height))
+    }
 }
 
 /// (path, face index in a collection): the first one present is used.
@@ -242,19 +320,72 @@ const SYSTEM_UI_BOLD: FontCandidates = &[
     ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
 ];
 
-fn load_system_font(candidates: FontCandidates) -> Option<FontData> {
+/// Read once and kept for the life of the process (fonts are never
+/// unloaded), so every family can borrow the same bytes.
+/// `files` shares a file between faces (Hiragino's regular and bold are
+/// one .ttc).
+fn load_system_font(
+    candidates: FontCandidates,
+    files: &mut std::collections::HashMap<&'static str, &'static [u8]>,
+) -> Option<Face> {
     candidates.iter().find_map(|&(path, index)| {
-        let bytes = std::fs::read(path).ok()?;
-        Some(FontData {
-            index,
-            ..FontData::from_owned(bytes)
-        })
+        let bytes = match files.get(path) {
+            Some(&bytes) => bytes,
+            None => {
+                let bytes: &'static [u8] = Box::leak(std::fs::read(path).ok()?.into_boxed_slice());
+                files.insert(path, bytes);
+                bytes
+            }
+        };
+        Face::new(bytes, index)
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_metrics_need_no_baseline_shift() {
+        let m = LineMetrics {
+            ascent: 1.02,
+            height: 1.32,
+        };
+        assert_eq!(m.shift_onto(m), 0.0);
+    }
+
+    #[test]
+    fn a_tall_line_gap_fallback_is_moved_down_onto_the_baseline() {
+        // Maple primary, Hiragino Sans GB fallback (measured metrics).
+        let maple = LineMetrics {
+            ascent: 1.02,
+            height: 1.32,
+        };
+        let hiragino = LineMetrics {
+            ascent: 0.88,
+            height: 1.5,
+        };
+        let shift = maple.shift_onto(hiragino);
+        assert!((shift - 0.23).abs() < 0.001, "{shift}");
+    }
+
+    #[test]
+    fn bundled_maple_is_latin_only_and_parses() {
+        use skrifa::MetadataProvider;
+        let face = Face::new(
+            include_bytes!("../assets/fonts/MapleMono-Regular-Latin.ttf"),
+            0,
+        )
+        .expect("bundled font parses");
+        assert!((face.line.ascent - 1.02).abs() < 0.01);
+        let font = skrifa::FontRef::new(face.bytes).unwrap();
+        assert!(font.charmap().map('A').is_some());
+        assert!(font.charmap().map('●').is_some(), "status dots");
+        assert!(
+            font.charmap().map('中').is_none(),
+            "CJK must come from the system font"
+        );
+    }
 
     /// WCAG 2.x relative luminance.
     fn luminance(c: Color32) -> f64 {

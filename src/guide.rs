@@ -159,7 +159,7 @@ fn command_table(ui: &mut egui::Ui) {
             ui.add_space(4.0);
             ui.label(
                 RichText::new(group)
-                    .font(theme::mono(10.5))
+                    .font(theme::ui(11.5))
                     .color(theme::c().text_faint),
             );
         }

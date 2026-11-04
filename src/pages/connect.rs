@@ -104,7 +104,7 @@ impl PadApp {
             ),
             (None, None) => ("● 等待设备…".to_string(), c.text_dim),
         };
-        ui.label(RichText::new(status).font(theme::mono(11.0)).color(color));
+        ui.label(RichText::new(status).font(theme::ui(12.0)).color(color));
         egui::CollapsingHeader::new(RichText::new("接入后未连接？").color(c.amber))
             .id_salt("connect-usb-help")
             .show(ui, |ui| {

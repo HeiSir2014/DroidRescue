@@ -81,7 +81,7 @@ pub fn paint_status(p: &Painter, lamp_center: Pos2, status: &Status) {
         lamp_center + vec2(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
         &status.text,
-        theme::mono(10.5),
+        theme::ui(11.5),
         status.text_color,
     );
 }

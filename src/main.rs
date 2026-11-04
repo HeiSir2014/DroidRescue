@@ -688,7 +688,7 @@ impl PadApp {
                     if let Some(task) = snap.tasks.first() {
                         ui.label(
                             RichText::new(format!("● {task}…"))
-                                .font(theme::mono(10.5))
+                                .font(theme::ui(11.5))
                                 .color(c.amber),
                         );
                     }
@@ -698,7 +698,7 @@ impl PadApp {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(last)
-                                    .font(theme::mono(10.5))
+                                    .font(theme::ui(11.5))
                                     .color(color_of(last)),
                             )
                             .truncate(),
@@ -714,7 +714,7 @@ impl PadApp {
                             for line in &snap.log {
                                 ui.label(
                                     RichText::new(line)
-                                        .font(theme::mono(10.5))
+                                        .font(theme::ui(11.5))
                                         .color(color_of(line)),
                                 );
                             }

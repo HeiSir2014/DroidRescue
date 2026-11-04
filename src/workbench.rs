@@ -236,7 +236,7 @@ impl Workbench {
             Err(e) => (format!("✘ {e}"), theme::c().red),
         };
         ui.horizontal(|ui| {
-            ui.label(RichText::new(text).font(theme::mono(11.0)).color(color));
+            ui.label(RichText::new(text).font(theme::ui(12.0)).color(color));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::link(ui, "完整说明与命令参考 →").clicked() {
                     actions.push(Action::OpenGuide);
@@ -439,7 +439,7 @@ impl Workbench {
             .unwrap_or_else(|| "设备未接管（运行时自动连接）".into());
         ui.label(
             RichText::new(format!("{state}    {device}"))
-                .font(theme::mono(10.5))
+                .font(theme::ui(11.5))
                 .color(theme::c().text_dim),
         );
     }

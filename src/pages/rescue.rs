@@ -48,7 +48,7 @@ impl PadApp {
             (None, true) => ("连接设备中…".to_string(), theme::c().amber),
             (None, false) => ("插上设备即可操作".to_string(), theme::c().text_dim),
         };
-        ui.label(RichText::new(text).font(theme::mono(10.5)).color(color));
+        ui.label(RichText::new(text).font(theme::ui(11.5)).color(color));
         if status.needs_setup {
             self.winusb_setup_link(ui);
         }
