@@ -26,6 +26,7 @@ mod input;
 mod logbar;
 mod mirror;
 mod nav;
+mod pad;
 mod pages;
 mod profiles;
 mod protocol;

@@ -282,6 +282,28 @@ into the editor.
 **Tests**: guide examples parse; Pad3 annotation covers every line.
 **Status**: Complete
 
+## Stage 18: Coordinate pad (坐标拾取板)
+**Goal**: beside the script editor, a pad shaped like the device screen
+(aspect preset, rotation rot:0–3 = the script's coordinate system). The
+mouse over it shows the normalised x,y live and — device held, sync on —
+hovers the pen at that point in real time; a click pins the point; insert
+`move:` / `click:` after the editor's cursor line, or copy.
+**Design**: hovering bypasses the run queue: `Rescue::pointer` keeps only
+the latest position (latest wins, never a backlog), the worker sends one
+HID report for it with the pad's rotation (the script's rotation state is
+untouched) and never opens the device on its own; 接管设备 does. Pointer
+traffic keeps the device from the idle release. UI sends ≤ 30/s, only on
+change.
+**Tests**: normalise (clamp, rotation-independent), pad size per
+aspect/rotation, coordinate formatting, command text, insert after a line;
+pointer coalescing (latest wins); ignored device test
+`device_pointer_takes_the_device_and_hovers`.
+**Done**: pad, readout, pin, insert / copy, sync + 接管设备; checked on the
+Mac (hover readout, pin, insert after the cursor line).
+**Pending**: live hover on a real device (phone was unplugged): run the
+device test / try it in the app.
+**Status**: In Progress
+
 ## Stage 5b: Window/rail stability
 **Goal**: start/stop mirroring resizes in one SetWindowPos keeping the rail's
 screen edge fixed (stage opens on the far side), clamped to the work area.
