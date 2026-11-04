@@ -403,9 +403,9 @@ impl Workbench {
             }
             let can_line = !line_steps.is_empty() && !busy;
             let line_hint = if cfg!(target_os = "macos") {
-                "⌘↩"
+                "⌘Enter"
             } else {
-                "Ctrl+↩"
+                "Ctrl+Enter"
             };
             if key(ui, KeyIcon::RunLine, "运行当前行", line_hint, can_line)
                 .on_hover_text(format!("第 {line} 行"))
