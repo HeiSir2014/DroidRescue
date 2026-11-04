@@ -9,47 +9,12 @@ use eframe::egui::{
 
 const R: CornerRadius = CornerRadius::same(theme::RADIUS);
 
-/// `01  DEVICE ─────────── 设备`
-pub fn section(ui: &mut Ui, index: &str, tag: &str, title: &str) {
-    let c = theme::c();
-    ui.add_space(4.0);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
-    let p = ui.painter();
-    let y = rect.center().y;
-    let idx = p.text(
-        pos2(rect.left(), y),
-        Align2::LEFT_CENTER,
-        index,
-        theme::strong_font(10.5),
-        c.amber,
-    );
-    let tag_r = p.text(
-        pos2(idx.right() + 8.0, y),
-        Align2::LEFT_CENTER,
-        tag,
-        theme::mono(10.0),
-        c.text_faint,
-    );
-    let title_r = p.text(
-        pos2(rect.right(), y),
-        Align2::RIGHT_CENTER,
-        title,
-        theme::mono(10.5),
-        c.text_dim,
-    );
-    p.line_segment(
-        [pos2(tag_r.right() + 8.0, y), pos2(title_r.left() - 8.0, y)],
-        Stroke::new(1.0, c.line),
-    );
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CaptionIcon {
     Minimize,
     Maximize,
     Restore,
     Close,
-    Swap,
 }
 
 /// Title-bar button, 44×caption_h; icons are drawn, not glyphs (crisp at any DPI).
@@ -94,15 +59,6 @@ pub fn caption_button(ui: &mut Ui, icon: CaptionIcon, height: f32) -> Response {
             p.line_segment([m + vec2(-4.5, -4.5), m + vec2(4.5, 4.5)], s);
             p.line_segment([m + vec2(4.5, -4.5), m + vec2(-4.5, 4.5)], s);
         }
-        CaptionIcon::Swap => {
-            for (dy, dir) in [(-2.5_f32, 1.0_f32), (2.5, -1.0)] {
-                let a = m + vec2(-5.0 * dir, dy);
-                let b = m + vec2(5.0 * dir, dy);
-                p.line_segment([a, b], s);
-                p.line_segment([b, b + vec2(-2.5 * dir, -2.0)], s);
-                p.line_segment([b, b + vec2(-2.5 * dir, 2.0)], s);
-            }
-        }
     }
     resp
 }
@@ -137,33 +93,6 @@ pub fn primary(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     } else {
         egui::CursorIcon::NotAllowed
     })
-}
-
-/// Full-width outlined "stop" action.
-pub fn danger(ui: &mut Ui, text: &str) -> Response {
-    let c = theme::c();
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::click());
-    let p = ui.painter();
-    let fill = if resp.hovered() {
-        c.red.gamma_multiply(0.14)
-    } else {
-        Color32::TRANSPARENT
-    };
-    p.rect_filled(rect, R, fill);
-    p.rect_stroke(
-        rect,
-        R,
-        Stroke::new(1.0, c.red.gamma_multiply(0.8)),
-        StrokeKind::Inside,
-    );
-    p.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        text,
-        theme::strong_font(14.0),
-        c.red,
-    );
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Hardware-style key: glyph on top, small caption below.
@@ -202,30 +131,6 @@ pub fn key(ui: &mut Ui, glyph: &str, label: &str, size: Vec2, enabled: bool) -> 
         if enabled { c.text_dim } else { c.text_faint },
     );
     resp
-}
-
-/// Small readout cell: `TAG` above a coloured value.
-pub fn readout(ui: &mut Ui, width: f32, tag: &str, value: &str, color: Color32) {
-    let c = theme::c();
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 44.0), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, R, c.surface);
-    p.rect_stroke(rect, R, Stroke::new(1.0, c.line), StrokeKind::Inside);
-    p.text(
-        rect.left_top() + vec2(9.0, 8.0),
-        Align2::LEFT_TOP,
-        tag,
-        theme::mono(9.5),
-        c.text_faint,
-    );
-    p.circle_filled(pos2(rect.left() + 12.0, rect.bottom() - 13.0), 2.5, color);
-    p.text(
-        pos2(rect.left() + 20.0, rect.bottom() - 13.0),
-        Align2::LEFT_CENTER,
-        value,
-        theme::strong_font(12.5),
-        color,
-    );
 }
 
 /// Full-width row: label left, pill switch right. `changed()` on toggle.

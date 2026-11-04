@@ -237,15 +237,20 @@ frames stay alive while in flight. Test: imported planes read back
 byte-identical to the CPU path's planes.
 **Status**: Complete (device check with a phone pending)
 
-## Stage 14: Rail + workspace layout
+## Stage 14: Sidebar navigation + pages
 **Why**: the 320 px single column made sense next to a video stage, not on
-its own; rescue/script work needs room.
-**Goal**: window = control rail (fixed `RAIL_W`: 01 连接, 02 投屏, 03 按键,
-04 解锁, 05 工具, 日志) + workspace. Mirroring: workspace = stage (as
-before). Idle: workspace = tabs 救援 · 脚本 · 说明. Idle width is the
-user's (remembered); min idle width = rail + workspace minimum.
-**Tests**: `min_window_size` for idle/mirroring; tab state round-trip.
-**Status**: Not Started
+its own; a rail + tabs split put controls in two places. Owner's direction:
+left navigation, every feature a page (layout language borrowed from
+desktop phone suites — cards, device hero, connect dialog — keeping our
+own palette and type, no third-party branding).
+**Goal**: sidebar (icon + label; collapses to icons while mirroring):
+首页 · 投屏 · 救援 · 脚本调试 · 脚本说明 | 工具 · 设置. 首页 = device hero card
+(name, status tags, actions, drawn device) + 解锁 card; 投屏 = stage + key
+strip; 救援 = rescue/manual/checkup cards; 工具 = wireless adb, export,
+stay-on; 设置 = theme + mirror options. Bottom log drawer on every page.
+Connect dialog (USB / 无线 / 屏幕坏了→救援). Pages live in `src/pages/`.
+**Tests**: window minimums per mode; page key round-trip; body split.
+**Status**: In Progress
 
 ## Stage 15: Script engine for debugging
 **Goal**: parse keeps source line numbers (errors say 第 N 行; steps map to

@@ -8,15 +8,6 @@ pub enum Side {
     Right,
 }
 
-impl Side {
-    pub const fn flipped(self) -> Side {
-        match self {
-            Side::Left => Side::Right,
-            Side::Right => Side::Left,
-        }
-    }
-}
-
 /// New window left edge when its width changes from `width` to `new_width`
 /// so that the control rail (on `rail` side) stays put on screen; the video
 /// stage grows/shrinks on the other side. Clamped into `[work_left, work_right]`.
