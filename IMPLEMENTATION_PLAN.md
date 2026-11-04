@@ -250,7 +250,7 @@ strip; 救援 = rescue/manual/checkup cards; 工具 = wireless adb, export,
 stay-on; 设置 = theme + mirror options. Bottom log drawer on every page.
 Connect dialog (USB / 无线 / 屏幕坏了→救援). Pages live in `src/pages/`.
 **Tests**: window minimums per mode; page key round-trip; body split.
-**Status**: In Progress
+**Status**: Complete (device check of the mirror page pending)
 
 ## Stage 15: Script engine for debugging
 **Goal**: parse keeps source line numbers (errors say 第 N 行; steps map to
@@ -261,7 +261,7 @@ pen rotation kept across runs while the device is held (single-stepping
 after `rot:0` works), runs can start fresh (rotation reset) or continue.
 **Tests**: line numbers in errors/steps; every COMMANDS example parses;
 cancel/rotation logic as pure functions.
-**Status**: Not Started
+**Status**: Complete
 
 ## Stage 16: Script workbench
 **Goal**: 脚本 tab: profile + field (解锁 / 一键救援) picker, code editor
@@ -270,7 +270,7 @@ executing line marker, 保存到机型配置 (rewrites only that section of
 rescue-profiles.txt), 新建机型 (name, adb model, USB ids prefilled from 设备体检).
 **Tests**: `profiles::render` + `replace_section` (replace, append, keep
 other sections and comments); new-profile prefill.
-**Status**: Not Started
+**Status**: Complete (device run of single-step pending)
 
 ## Stage 17: In-app script guide (说明)
 **Goal**: complete guide in the UI: concepts, command reference (from
@@ -279,7 +279,7 @@ single-step, reconnect across USB-mode switches, save), debugging tips /
 FAQ, the Pad3 script annotated line by line; "插入" buttons put examples
 into the editor.
 **Tests**: guide examples parse; Pad3 annotation covers every line.
-**Status**: Not Started
+**Status**: Complete
 
 ## Stage 5b: Window/rail stability
 **Goal**: start/stop mirroring resizes in one SetWindowPos keeping the rail's

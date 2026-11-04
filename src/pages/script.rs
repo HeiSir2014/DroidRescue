@@ -6,6 +6,11 @@ use eframe::egui;
 
 impl PadApp {
     pub(crate) fn script_page(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        super::page_header(
+            ui,
+            "脚本调试",
+            "编写机型的解锁 / 一键救援脚本：实时检查语法，运行、单步、运行当前行，保存到机型配置。",
+        );
         let status = self.rescue.status.lock().unwrap().clone();
         let password = self.rescue_password(snap, status.serial.as_deref());
         let current = self.profile(snap).cloned();
@@ -27,6 +32,11 @@ impl PadApp {
     }
 
     pub(crate) fn guide_page(&mut self, ui: &mut egui::Ui) {
+        super::page_header(
+            ui,
+            "脚本说明",
+            "救援脚本的概念、命令参考、开发流程、调试方法和示例。",
+        );
         if let Some(guide::Action::Insert(text)) = guide::ui(ui) {
             self.workbench.insert(text);
             self.page = Page::Script;

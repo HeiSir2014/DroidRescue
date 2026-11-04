@@ -459,7 +459,7 @@ impl Workbench {
             (None, false) => String::new(),
             (None, true) => {
                 actions.push(Action::Log(
-                    "✘ 脚本用到 {pw}，但没有锁屏密码：请先在 04 输入".into(),
+                    "✘ 脚本用到 {pw}，但没有锁屏密码：请先在首页「解锁」里输入".into(),
                 ));
                 return;
             }
