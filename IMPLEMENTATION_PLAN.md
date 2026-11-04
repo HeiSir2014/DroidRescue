@@ -196,14 +196,22 @@ Window minimum width = rail width (+ stage while mirroring).
 **Pending**: device verification on a fresh PC / new port.
 **Status**: Complete (code), device check pending
 
-## Stage 11: macOS port (Mac mini, ~/Documents/projects/droidrescue)
+## Stage 11: macOS port (Mac mini, ~/Documents/projects/DroidRescue)
 **Goal**: same crate, platform modules behind `cfg`: VideoToolbox decode →
 IOSurface → Metal texture (zero-copy, wgpu Metal hal); rescue AOA through
 IOKit/libusb (no driver binding on macOS); Keychain for PINs; native
 titlebar with full-size content view; bundled darwin adb; signed .app/.dmg
 via CI macos-latest.
 **Tests**: core tests pass on macOS; mirror + rescue on device.
-**Status**: Not Started
+**Done**: platform modules (`src/macos/`: usbhost/usbdev via nusb, chrome,
+decoder_vt); Keychain-keyed AES-GCM PIN store; Metal backend; native
+traffic-light title bar; darwin adb bundle (`fetch-vendor.sh`);
+`package-macos.sh` → ad-hoc signed .app in an LZMA .dmg; CI macos job
+(fmt, clippy, tests incl. a real VideoToolbox decode, package).
+**Pending**: device test (mirror + rescue) on a Mac with a phone attached;
+zero-copy IOSurface → Metal; Developer ID signing + notarisation; app icon
+(both platforms).
+**Status**: In Progress (runs; device verification pending)
 
 ## Stage 5b: Window/rail stability
 **Goal**: start/stop mirroring resizes in one SetWindowPos keeping the rail's

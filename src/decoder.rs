@@ -1,12 +1,41 @@
-//! H.264 decoding behind a small trait so the backend can be swapped
-//! (CPU FFmpeg now; zero-copy D3D11 later).
+//! H.264 decoding behind a small trait so the backend can be swapped:
+//! Windows — Media Foundation zero-copy (decoder_mf.rs), FFmpeg on the CPU
+//! as fallback; macOS — VideoToolbox (macos/decoder_vt.rs).
 //!
 //! The FFmpeg backend loads the bundled avcodec/avutil at runtime and only
 //! touches the long-stable leading fields of AVPacket / AVFrame.
 
-use std::ffi::{CString, c_char, c_int, c_void};
-use std::path::Path;
 use std::time::Instant;
+
+/// NAL units of an Annex-B byte stream (start codes `00 00 01` or
+/// `00 00 00 01` removed).
+#[cfg_attr(windows, allow(dead_code))] // Media Foundation takes Annex-B as is
+pub fn annexb_nals(stream: &[u8]) -> Vec<&[u8]> {
+    // Positions just past each start code.
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while i + 3 <= stream.len() {
+        if stream[i..i + 3] == [0, 0, 1] {
+            starts.push(i + 3);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    let mut out = Vec::with_capacity(starts.len());
+    for (k, &start) in starts.iter().enumerate() {
+        let mut end = starts.get(k + 1).map_or(stream.len(), |&next| next - 3);
+        // A 4-byte start code leaves its leading zero on the previous NAL;
+        // NALs never end in a zero byte (rbsp trailing bits), so trim zeros.
+        while end > start && stream[end - 1] == 0 {
+            end -= 1;
+        }
+        if end > start {
+            out.push(&stream[start..end]);
+        }
+    }
+    out
+}
 
 /// Where the decoded pixels live.
 pub enum Picture {
@@ -20,6 +49,7 @@ pub enum Picture {
     /// NV12 in a shared D3D11 texture (NT handle owned by the decoder whose
     /// id is `pool`). The visible picture is the top-left `width × height`
     /// of the (macroblock-aligned) `texture_size`.
+    #[cfg_attr(not(windows), allow(dead_code))] // Windows hardware decoder only
     Shared {
         handle: isize,
         pool: u64,
@@ -73,244 +103,257 @@ pub trait Decoder: Send {
 }
 
 // ───────────────────────── FFmpeg FFI ─────────────────────────
+// Windows only: the scrcpy Windows release ships the FFmpeg DLLs; macOS
+// decodes with VideoToolbox instead.
 
-const AV_CODEC_ID_H264: c_int = 27;
-const AV_PIX_FMT_YUV420P: c_int = 0;
-const AV_PIX_FMT_YUVJ420P: c_int = 12;
-const AVERROR_EAGAIN: c_int = -11; // AVERROR(EAGAIN) with the MSVC/mingw errno value
+#[cfg(windows)]
+pub use ffmpeg::FfmpegDecoder;
 
-/// Leading fields of AVPacket (stable since FFmpeg 1.x).
-#[repr(C)]
-struct AvPacket {
-    buf: *mut c_void,
-    pts: i64,
-    dts: i64,
-    data: *mut u8,
-    size: c_int,
-}
+#[cfg(windows)]
+mod ffmpeg {
+    use super::{Decoder, Frame, Picture};
+    use std::ffi::{CString, c_char, c_int, c_void};
+    use std::path::Path;
+    use std::time::Instant;
 
-/// Leading fields of AVFrame (stable since FFmpeg 1.x).
-#[repr(C)]
-struct AvFrame {
-    data: [*mut u8; 8],
-    linesize: [c_int; 8],
-    extended_data: *mut *mut u8,
-    width: c_int,
-    height: c_int,
-    nb_samples: c_int,
-    format: c_int,
-}
+    const AV_CODEC_ID_H264: c_int = 27;
+    const AV_PIX_FMT_YUV420P: c_int = 0;
+    const AV_PIX_FMT_YUVJ420P: c_int = 12;
+    const AVERROR_EAGAIN: c_int = -11; // AVERROR(EAGAIN) with the MSVC/mingw errno value
 
-type FnFindDecoder = unsafe extern "C" fn(c_int) -> *const c_void;
-type FnAllocContext = unsafe extern "C" fn(*const c_void) -> *mut c_void;
-type FnOpen2 = unsafe extern "C" fn(*mut c_void, *const c_void, *mut *mut c_void) -> c_int;
-type FnFreeContext = unsafe extern "C" fn(*mut *mut c_void);
-type FnPacketAlloc = unsafe extern "C" fn() -> *mut AvPacket;
-type FnPacketFree = unsafe extern "C" fn(*mut *mut AvPacket);
-type FnNewPacket = unsafe extern "C" fn(*mut AvPacket, c_int) -> c_int;
-type FnPacketUnref = unsafe extern "C" fn(*mut AvPacket);
-type FnSendPacket = unsafe extern "C" fn(*mut c_void, *const AvPacket) -> c_int;
-type FnReceiveFrame = unsafe extern "C" fn(*mut c_void, *mut AvFrame) -> c_int;
-type FnFrameAlloc = unsafe extern "C" fn() -> *mut AvFrame;
-type FnFrameFree = unsafe extern "C" fn(*mut *mut AvFrame);
-type FnFrameUnref = unsafe extern "C" fn(*mut AvFrame);
-type FnDictSet =
-    unsafe extern "C" fn(*mut *mut c_void, *const c_char, *const c_char, c_int) -> c_int;
-type FnDictFree = unsafe extern "C" fn(*mut *mut c_void);
+    /// Leading fields of AVPacket (stable since FFmpeg 1.x).
+    #[repr(C)]
+    struct AvPacket {
+        buf: *mut c_void,
+        pts: i64,
+        dts: i64,
+        data: *mut u8,
+        size: c_int,
+    }
 
-struct Api {
-    packet_free: FnPacketFree,
-    new_packet: FnNewPacket,
-    packet_unref: FnPacketUnref,
-    send_packet: FnSendPacket,
-    receive_frame: FnReceiveFrame,
-    frame_free: FnFrameFree,
-    frame_unref: FnFrameUnref,
-    free_context: FnFreeContext,
-}
+    /// Leading fields of AVFrame (stable since FFmpeg 1.x).
+    #[repr(C)]
+    struct AvFrame {
+        data: [*mut u8; 8],
+        linesize: [c_int; 8],
+        extended_data: *mut *mut u8,
+        width: c_int,
+        height: c_int,
+        nb_samples: c_int,
+        format: c_int,
+    }
 
-pub struct FfmpegDecoder {
-    api: Api,
-    ctx: *mut c_void,
-    pkt: *mut AvPacket,
-    frame: *mut AvFrame,
-    warned_format: bool,
-    // Keep the libraries loaded for as long as the function pointers live.
-    _libs: Vec<libloading::Library>,
-}
+    type FnFindDecoder = unsafe extern "C" fn(c_int) -> *const c_void;
+    type FnAllocContext = unsafe extern "C" fn(*const c_void) -> *mut c_void;
+    type FnOpen2 = unsafe extern "C" fn(*mut c_void, *const c_void, *mut *mut c_void) -> c_int;
+    type FnFreeContext = unsafe extern "C" fn(*mut *mut c_void);
+    type FnPacketAlloc = unsafe extern "C" fn() -> *mut AvPacket;
+    type FnPacketFree = unsafe extern "C" fn(*mut *mut AvPacket);
+    type FnNewPacket = unsafe extern "C" fn(*mut AvPacket, c_int) -> c_int;
+    type FnPacketUnref = unsafe extern "C" fn(*mut AvPacket);
+    type FnSendPacket = unsafe extern "C" fn(*mut c_void, *const AvPacket) -> c_int;
+    type FnReceiveFrame = unsafe extern "C" fn(*mut c_void, *mut AvFrame) -> c_int;
+    type FnFrameAlloc = unsafe extern "C" fn() -> *mut AvFrame;
+    type FnFrameFree = unsafe extern "C" fn(*mut *mut AvFrame);
+    type FnFrameUnref = unsafe extern "C" fn(*mut AvFrame);
+    type FnDictSet =
+        unsafe extern "C" fn(*mut *mut c_void, *const c_char, *const c_char, c_int) -> c_int;
+    type FnDictFree = unsafe extern "C" fn(*mut *mut c_void);
 
-// SAFETY: the decoder is used from one thread at a time (moved into the demux thread).
-unsafe impl Send for FfmpegDecoder {}
+    struct Api {
+        packet_free: FnPacketFree,
+        new_packet: FnNewPacket,
+        packet_unref: FnPacketUnref,
+        send_packet: FnSendPacket,
+        receive_frame: FnReceiveFrame,
+        frame_free: FnFrameFree,
+        frame_unref: FnFrameUnref,
+        free_context: FnFreeContext,
+    }
 
-fn load(dir: &Path, name: &str) -> Result<libloading::Library, String> {
-    let path = dir.join(name);
-    // SAFETY: loading a trusted DLL that ships with this program.
-    unsafe { libloading::Library::new(&path) }
-        .map_err(|e| format!("加载 {} 失败: {e}", path.display()))
-}
+    pub struct FfmpegDecoder {
+        api: Api,
+        ctx: *mut c_void,
+        pkt: *mut AvPacket,
+        frame: *mut AvFrame,
+        warned_format: bool,
+        // Keep the libraries loaded for as long as the function pointers live.
+        _libs: Vec<libloading::Library>,
+    }
 
-fn sym<T: Copy>(lib: &libloading::Library, name: &[u8]) -> Result<T, String> {
-    // SAFETY: the type T matches the documented C signature of `name`.
-    unsafe { lib.get::<T>(name) }
-        .map(|s| *s)
-        .map_err(|e| format!("缺少符号 {}: {e}", String::from_utf8_lossy(name)))
-}
+    // SAFETY: the decoder is used from one thread at a time (moved into the demux thread).
+    unsafe impl Send for FfmpegDecoder {}
 
-impl FfmpegDecoder {
-    /// `dir` holds avutil-61.dll, swresample-7.dll and avcodec-63.dll.
-    pub fn new(dir: &Path) -> Result<Self, String> {
-        // Dependencies first so avcodec's imports resolve to these copies.
-        let avutil = load(dir, "avutil-61.dll")?;
-        let swresample = load(dir, "swresample-7.dll")?;
-        let avcodec = load(dir, "avcodec-63.dll")?;
+    fn load(dir: &Path, name: &str) -> Result<libloading::Library, String> {
+        let path = dir.join(name);
+        // SAFETY: loading a trusted DLL that ships with this program.
+        unsafe { libloading::Library::new(&path) }
+            .map_err(|e| format!("加载 {} 失败: {e}", path.display()))
+    }
 
-        let find_decoder: FnFindDecoder = sym(&avcodec, b"avcodec_find_decoder\0")?;
-        let alloc_context: FnAllocContext = sym(&avcodec, b"avcodec_alloc_context3\0")?;
-        let open2: FnOpen2 = sym(&avcodec, b"avcodec_open2\0")?;
-        let packet_alloc: FnPacketAlloc = sym(&avcodec, b"av_packet_alloc\0")?;
-        let frame_alloc: FnFrameAlloc = sym(&avutil, b"av_frame_alloc\0")?;
-        let dict_set: FnDictSet = sym(&avutil, b"av_dict_set\0")?;
-        let dict_free: FnDictFree = sym(&avutil, b"av_dict_free\0")?;
-        let api = Api {
-            packet_free: sym(&avcodec, b"av_packet_free\0")?,
-            new_packet: sym(&avcodec, b"av_new_packet\0")?,
-            packet_unref: sym(&avcodec, b"av_packet_unref\0")?,
-            send_packet: sym(&avcodec, b"avcodec_send_packet\0")?,
-            receive_frame: sym(&avcodec, b"avcodec_receive_frame\0")?,
-            frame_free: sym(&avutil, b"av_frame_free\0")?,
-            frame_unref: sym(&avutil, b"av_frame_unref\0")?,
-            free_context: sym(&avcodec, b"avcodec_free_context\0")?,
-        };
+    fn sym<T: Copy>(lib: &libloading::Library, name: &[u8]) -> Result<T, String> {
+        // SAFETY: the type T matches the documented C signature of `name`.
+        unsafe { lib.get::<T>(name) }
+            .map(|s| *s)
+            .map_err(|e| format!("缺少符号 {}: {e}", String::from_utf8_lossy(name)))
+    }
 
-        // SAFETY: straightforward FFmpeg setup; every pointer is checked.
-        unsafe {
-            let codec = find_decoder(AV_CODEC_ID_H264);
-            if codec.is_null() {
-                return Err("FFmpeg 不含 H.264 解码器".into());
+    impl FfmpegDecoder {
+        /// `dir` holds avutil-61.dll, swresample-7.dll and avcodec-63.dll.
+        pub fn new(dir: &Path) -> Result<Self, String> {
+            // Dependencies first so avcodec's imports resolve to these copies.
+            let avutil = load(dir, "avutil-61.dll")?;
+            let swresample = load(dir, "swresample-7.dll")?;
+            let avcodec = load(dir, "avcodec-63.dll")?;
+
+            let find_decoder: FnFindDecoder = sym(&avcodec, b"avcodec_find_decoder\0")?;
+            let alloc_context: FnAllocContext = sym(&avcodec, b"avcodec_alloc_context3\0")?;
+            let open2: FnOpen2 = sym(&avcodec, b"avcodec_open2\0")?;
+            let packet_alloc: FnPacketAlloc = sym(&avcodec, b"av_packet_alloc\0")?;
+            let frame_alloc: FnFrameAlloc = sym(&avutil, b"av_frame_alloc\0")?;
+            let dict_set: FnDictSet = sym(&avutil, b"av_dict_set\0")?;
+            let dict_free: FnDictFree = sym(&avutil, b"av_dict_free\0")?;
+            let api = Api {
+                packet_free: sym(&avcodec, b"av_packet_free\0")?,
+                new_packet: sym(&avcodec, b"av_new_packet\0")?,
+                packet_unref: sym(&avcodec, b"av_packet_unref\0")?,
+                send_packet: sym(&avcodec, b"avcodec_send_packet\0")?,
+                receive_frame: sym(&avcodec, b"avcodec_receive_frame\0")?,
+                frame_free: sym(&avutil, b"av_frame_free\0")?,
+                frame_unref: sym(&avutil, b"av_frame_unref\0")?,
+                free_context: sym(&avcodec, b"avcodec_free_context\0")?,
+            };
+
+            // SAFETY: straightforward FFmpeg setup; every pointer is checked.
+            unsafe {
+                let codec = find_decoder(AV_CODEC_ID_H264);
+                if codec.is_null() {
+                    return Err("FFmpeg 不含 H.264 解码器".into());
+                }
+                let ctx = alloc_context(codec);
+                if ctx.is_null() {
+                    return Err("avcodec_alloc_context3 失败".into());
+                }
+                // Low latency: no frame reordering delay, slice threads only.
+                let mut opts: *mut c_void = std::ptr::null_mut();
+                for (k, v) in [
+                    ("flags", "low_delay"),
+                    ("thread_type", "slice"),
+                    ("threads", "0"),
+                ] {
+                    let (k, v) = (CString::new(k).unwrap(), CString::new(v).unwrap());
+                    dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
+                }
+                let rc = open2(ctx, codec, &mut opts);
+                dict_free(&mut opts);
+                let mut ctx_mut = ctx;
+                if rc < 0 {
+                    (api.free_context)(&mut ctx_mut);
+                    return Err(format!("avcodec_open2 失败 ({rc})"));
+                }
+                let pkt = packet_alloc();
+                let frame = frame_alloc();
+                if pkt.is_null() || frame.is_null() {
+                    (api.free_context)(&mut ctx_mut);
+                    return Err("分配 AVPacket/AVFrame 失败".into());
+                }
+                Ok(Self {
+                    api,
+                    ctx,
+                    pkt,
+                    frame,
+                    warned_format: false,
+                    _libs: vec![avcodec, swresample, avutil],
+                })
             }
-            let ctx = alloc_context(codec);
-            if ctx.is_null() {
-                return Err("avcodec_alloc_context3 失败".into());
+        }
+
+        /// Copy the current AVFrame into an owned `Frame`.
+        unsafe fn take_frame(&mut self, received_at: Instant) -> Option<Frame> {
+            let f = unsafe { &*self.frame };
+            let full_range = match f.format {
+                AV_PIX_FMT_YUV420P => false,
+                AV_PIX_FMT_YUVJ420P => true,
+                _ => {
+                    self.warned_format = true;
+                    return None;
+                }
+            };
+            let (w, h) = (f.width as u32, f.height as u32);
+            let rows = [h, h.div_ceil(2), h.div_ceil(2)];
+            let mut planes: [Vec<u8>; 3] = Default::default();
+            let mut strides = [0u32; 3];
+            for i in 0..3 {
+                let stride = f.linesize[i] as usize;
+                let len = stride * rows[i] as usize;
+                // SAFETY: FFmpeg guarantees `linesize * rows` readable bytes per plane.
+                planes[i] = unsafe { std::slice::from_raw_parts(f.data[i], len) }.to_vec();
+                strides[i] = stride as u32;
             }
-            // Low latency: no frame reordering delay, slice threads only.
-            let mut opts: *mut c_void = std::ptr::null_mut();
-            for (k, v) in [
-                ("flags", "low_delay"),
-                ("thread_type", "slice"),
-                ("threads", "0"),
-            ] {
-                let (k, v) = (CString::new(k).unwrap(), CString::new(v).unwrap());
-                dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
-            }
-            let rc = open2(ctx, codec, &mut opts);
-            dict_free(&mut opts);
-            let mut ctx_mut = ctx;
-            if rc < 0 {
-                (api.free_context)(&mut ctx_mut);
-                return Err(format!("avcodec_open2 失败 ({rc})"));
-            }
-            let pkt = packet_alloc();
-            let frame = frame_alloc();
-            if pkt.is_null() || frame.is_null() {
-                (api.free_context)(&mut ctx_mut);
-                return Err("分配 AVPacket/AVFrame 失败".into());
-            }
-            Ok(Self {
-                api,
-                ctx,
-                pkt,
-                frame,
-                warned_format: false,
-                _libs: vec![avcodec, swresample, avutil],
+            Some(Frame {
+                width: w,
+                height: h,
+                picture: Picture::Cpu {
+                    planes,
+                    strides,
+                    full_range,
+                },
+                received_at,
+                decoded_at: Instant::now(),
             })
         }
     }
 
-    /// Copy the current AVFrame into an owned `Frame`.
-    unsafe fn take_frame(&mut self, received_at: Instant) -> Option<Frame> {
-        let f = unsafe { &*self.frame };
-        let full_range = match f.format {
-            AV_PIX_FMT_YUV420P => false,
-            AV_PIX_FMT_YUVJ420P => true,
-            _ => {
-                self.warned_format = true;
-                return None;
-            }
-        };
-        let (w, h) = (f.width as u32, f.height as u32);
-        let rows = [h, h.div_ceil(2), h.div_ceil(2)];
-        let mut planes: [Vec<u8>; 3] = Default::default();
-        let mut strides = [0u32; 3];
-        for i in 0..3 {
-            let stride = f.linesize[i] as usize;
-            let len = stride * rows[i] as usize;
-            // SAFETY: FFmpeg guarantees `linesize * rows` readable bytes per plane.
-            planes[i] = unsafe { std::slice::from_raw_parts(f.data[i], len) }.to_vec();
-            strides[i] = stride as u32;
+    impl Decoder for FfmpegDecoder {
+        fn name(&self) -> &'static str {
+            "FFmpeg CPU"
         }
-        Some(Frame {
-            width: w,
-            height: h,
-            picture: Picture::Cpu {
-                planes,
-                strides,
-                full_range,
-            },
-            received_at,
-            decoded_at: Instant::now(),
-        })
-    }
-}
 
-impl Decoder for FfmpegDecoder {
-    fn name(&self) -> &'static str {
-        "FFmpeg CPU"
-    }
-
-    fn decode(
-        &mut self,
-        packet: &[u8],
-        received_at: Instant,
-        on_frame: &mut dyn FnMut(Frame),
-    ) -> Result<(), String> {
-        // SAFETY: pkt/frame/ctx are valid for the decoder's lifetime.
-        unsafe {
-            if (self.api.new_packet)(self.pkt, packet.len() as c_int) < 0 {
-                return Err("av_new_packet 失败".into());
-            }
-            std::ptr::copy_nonoverlapping(packet.as_ptr(), (*self.pkt).data, packet.len());
-            let rc = (self.api.send_packet)(self.ctx, self.pkt);
-            (self.api.packet_unref)(self.pkt);
-            if rc < 0 && rc != AVERROR_EAGAIN {
-                return Err(format!("avcodec_send_packet 失败 ({rc})"));
-            }
-            loop {
-                let rc = (self.api.receive_frame)(self.ctx, self.frame);
-                if rc < 0 {
-                    break; // EAGAIN (needs more input) or EOF
+        fn decode(
+            &mut self,
+            packet: &[u8],
+            received_at: Instant,
+            on_frame: &mut dyn FnMut(Frame),
+        ) -> Result<(), String> {
+            // SAFETY: pkt/frame/ctx are valid for the decoder's lifetime.
+            unsafe {
+                if (self.api.new_packet)(self.pkt, packet.len() as c_int) < 0 {
+                    return Err("av_new_packet 失败".into());
                 }
-                let frame = self.take_frame(received_at);
-                (self.api.frame_unref)(self.frame);
-                match frame {
-                    Some(f) => on_frame(f),
-                    None if self.warned_format => {
-                        return Err("不支持的像素格式（需要 YUV420P）".into());
+                std::ptr::copy_nonoverlapping(packet.as_ptr(), (*self.pkt).data, packet.len());
+                let rc = (self.api.send_packet)(self.ctx, self.pkt);
+                (self.api.packet_unref)(self.pkt);
+                if rc < 0 && rc != AVERROR_EAGAIN {
+                    return Err(format!("avcodec_send_packet 失败 ({rc})"));
+                }
+                loop {
+                    let rc = (self.api.receive_frame)(self.ctx, self.frame);
+                    if rc < 0 {
+                        break; // EAGAIN (needs more input) or EOF
                     }
-                    None => {}
+                    let frame = self.take_frame(received_at);
+                    (self.api.frame_unref)(self.frame);
+                    match frame {
+                        Some(f) => on_frame(f),
+                        None if self.warned_format => {
+                            return Err("不支持的像素格式（需要 YUV420P）".into());
+                        }
+                        None => {}
+                    }
                 }
             }
+            Ok(())
         }
-        Ok(())
     }
-}
 
-impl Drop for FfmpegDecoder {
-    fn drop(&mut self) {
-        // SAFETY: each pointer was allocated by FFmpeg and is freed exactly once.
-        unsafe {
-            (self.api.frame_free)(&mut self.frame);
-            (self.api.packet_free)(&mut self.pkt);
-            (self.api.free_context)(&mut self.ctx);
+    impl Drop for FfmpegDecoder {
+        fn drop(&mut self) {
+            // SAFETY: each pointer was allocated by FFmpeg and is freed exactly once.
+            unsafe {
+                (self.api.frame_free)(&mut self.frame);
+                (self.api.packet_free)(&mut self.pkt);
+                (self.api.free_context)(&mut self.ctx);
+            }
         }
     }
 }
@@ -318,6 +361,22 @@ impl Drop for FfmpegDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_annexb_with_both_start_code_lengths() {
+        let stream = [
+            0, 0, 0, 1, 0x67, 0xAA, // SPS, 4-byte start code
+            0, 0, 1, 0x68, 0xBB, // PPS, 3-byte start code
+            0, 0, 0, 1, 0x65, 0x00, 0x01, 0xCC, // IDR with an inner 00 01
+        ];
+        let nals = annexb_nals(&stream);
+        assert_eq!(
+            nals,
+            [&[0x67, 0xAA][..], &[0x68, 0xBB], &[0x65, 0x00, 0x01, 0xCC]]
+        );
+        assert!(annexb_nals(&[]).is_empty());
+        assert!(annexb_nals(&[0x65, 0x01]).is_empty(), "no start code");
+    }
 
     #[test]
     fn crop_scale_hides_macroblock_padding() {

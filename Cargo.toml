@@ -8,8 +8,11 @@ edition = "2024"
 [dependencies]
 cpal = "0.18.2"
 eframe = { version = "0.35.0", features = ["persistence"] }
-libloading = "0.9.0"
 raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+# Bundled FFmpeg DLLs (CPU decode fallback).
+libloading = "0.9.0"
 # Same major as wgpu-hal 29 so D3D12 interfaces can be handed to it directly.
 windows = { version = "0.62", features = [
     "Win32_Foundation",
@@ -23,6 +26,13 @@ windows = { version = "0.62", features = [
     "Win32_System_Com",
 ] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_Security", "Win32_Security_Cryptography", "Win32_Devices_DeviceAndDriverInstallation", "Win32_System_Registry", "Win32_Devices_Usb", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Rescue: AOA control transfers through IOKit (no driver binding on macOS).
+nusb = "0.2.9"
+# Lock-screen PINs: AES-256-GCM with a key kept in the login Keychain.
+security-framework = "3.7.0"
+aes-gcm = "0.11.1"
 
 # Smallest/fastest shipping binary: whole-program LTO, one codegen unit, no
 # debug symbols in the exe (the PDB is still written next to it).

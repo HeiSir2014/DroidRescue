@@ -95,6 +95,37 @@ impl fmt::Display for UsbTarget {
     }
 }
 
+/// A present USB device or interface, as the platform scanner reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsbEntry {
+    /// Windows-style instance id (`USB\VID_…&PID_…[&MI_..]\<instance>`);
+    /// the macOS scanner synthesises the same shape.
+    pub id: String,
+    /// Bound driver (`WinUSB`, `WUDFWpdMtp`, …; empty = none).
+    pub service: String,
+    pub description: String,
+    /// Usable for AOA as is: WinUSB bound (Windows); always (macOS).
+    pub ready: bool,
+}
+
+impl UsbEntry {
+    pub fn target(&self) -> Option<UsbTarget> {
+        UsbTarget::of_instance(&self.id)
+    }
+}
+
+/// Target instances in `entries` that are not ready yet — on Windows, the
+/// adb-mode interface the first time the device switches into it, or any
+/// target on a USB port this PC has not seen it on.
+#[cfg_attr(not(windows), allow(dead_code))] // macOS has nothing to bind
+pub fn unbound(entries: &[UsbEntry], targets: &[UsbTarget]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|e| is_target(targets, &e.id) && !e.ready)
+        .map(|e| e.id.clone())
+        .collect()
+}
+
 /// Is `instance_id` one of `targets`?
 pub fn is_target(targets: &[UsbTarget], instance_id: &str) -> bool {
     targets.iter().any(|t| t.matches_instance(instance_id))
@@ -174,6 +205,33 @@ mod tests {
             None,
             "needs an instance suffix"
         );
+    }
+
+    fn entry(id: &str, ready: bool) -> UsbEntry {
+        UsbEntry {
+            id: id.into(),
+            service: String::new(),
+            description: String::new(),
+            ready,
+        }
+    }
+
+    /// The second-PC failure: the adb-mode interface had no driver yet.
+    #[test]
+    fn finds_targets_that_are_not_ready_only() {
+        let targets = UsbTarget::parse_list("2D95:6012:01, 2D95:6013:01").unwrap();
+        let entries = [
+            entry(r"USB\VID_2D95&PID_6013\SER0123456789AB", false),
+            entry(r"USB\VID_2D95&PID_6013&MI_00\7&24A3E323&0&0000", false),
+            entry(r"USB\VID_2D95&PID_6013&MI_01\7&24A3E323&0&0001", false),
+            entry(r"USB\VID_2D95&PID_6013&MI_02\7&24A3E323&0&0002", true),
+            entry(r"USB\VID_2D95&PID_6012&MI_01\7&37F57971&0&0001", true),
+        ];
+        assert_eq!(
+            unbound(&entries, &targets),
+            [r"USB\VID_2D95&PID_6013&MI_01\7&24A3E323&0&0001"]
+        );
+        assert!(unbound(&entries, &[]).is_empty(), "no targets, no binds");
     }
 
     #[test]

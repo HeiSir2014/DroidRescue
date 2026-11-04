@@ -2,8 +2,8 @@
 //! reach them — the first thing to look at when a rescue fails on a new PC,
 //! port or model, and where the `usb =` ids for a new profile come from.
 
+use crate::usbid::UsbEntry;
 use crate::usbid::{self, UsbTarget};
-use crate::winusb::UsbEntry;
 
 /// Declared in display order (most rescue-relevant first).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,7 +31,7 @@ pub fn role(entry: &UsbEntry, targets: &[UsbTarget]) -> Role {
     let service = entry.service.to_ascii_lowercase();
     let description = entry.description.to_ascii_lowercase();
     if usbid::is_target(targets, &entry.id) {
-        if entry.has_winusb() {
+        if entry.ready {
             Role::Ready
         } else {
             Role::NeedsDriver
@@ -128,6 +128,7 @@ mod tests {
             id: id.into(),
             service: service.into(),
             description: description.into(),
+            ready: service == "WinUSB",
         }
     }
 

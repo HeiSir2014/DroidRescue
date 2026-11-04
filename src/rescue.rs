@@ -286,8 +286,8 @@ impl Rescue {
 }
 
 /// Open the tablet and register the HID devices.
-fn open() -> Result<Aoa, String> {
-    let mut aoa = Aoa::open(None)?;
+fn open(targets: &[UsbTarget]) -> Result<Aoa, String> {
+    let mut aoa = Aoa::open(None, targets)?;
     aoa.register_all()?;
     Ok(aoa)
 }
@@ -295,24 +295,25 @@ fn open() -> Result<Aoa, String> {
 /// [`open`], first binding WinUSB to a target that has no driver yet —
 /// first use on this PC, USB port or mode. One UAC prompt (the helper is
 /// elevated, never this process), then wait for the driver to come up.
+/// (macOS needs no driver: nothing is ever unbound there.)
 fn connect(targets: &[UsbTarget], log: &LogFn) -> Result<Aoa, String> {
-    match open() {
+    match open(targets) {
         Err(e) if e.contains(crate::usbdev::NOT_FOUND) => {}
         other => return other,
     }
-    let unbound = crate::winusb::unbound_targets(targets);
+    let unbound = crate::usbhost::unbound_targets(targets);
     let Some(id) = unbound.first() else {
         return Err(crate::usbdev::NOT_FOUND.into());
     };
     log(format!(
         "… 救援: {id} 还没有 WinUSB，正在请求管理员权限安装 —— 请在电脑上点“是”"
     ));
-    crate::winusb::install_elevated(targets)?;
+    crate::usbhost::install_elevated(targets)?;
     let deadline = Instant::now() + INSTALL_GRACE;
     while Instant::now() < deadline {
         thread::sleep(RECONNECT_POLL);
-        if !crate::usbdev::present_parents().is_empty() {
-            return open();
+        if !crate::usbdev::present_parents(targets).is_empty() {
+            return open(targets);
         }
     }
     Err("等待 WinUSB 安装超时（管理员授权被拒绝？详情见日志）".into())
@@ -454,15 +455,15 @@ fn wait_for_device(
     let mut install_requested = false;
     let mut last = String::from("平板尚未重新出现");
     while Instant::now() < deadline {
-        let present = crate::usbdev::present_parents();
+        let present = crate::usbdev::present_parents(targets);
         old_left |= !present.iter().any(|p| p == previous);
         if is_new_configuration(previous, old_left, &present) {
-            match open() {
+            match open(targets) {
                 Ok(aoa) => return Ok(aoa),
                 Err(e) => last = e,
             }
         } else if !install_requested
-            && let [id, ..] = crate::winusb::unbound_targets(targets).as_slice()
+            && let [id, ..] = crate::usbhost::unbound_targets(targets).as_slice()
         {
             // First time in this USB mode on this PC: its interface has no
             // WinUSB yet. Install it now (UAC on the PC screen) and keep waiting.
@@ -470,7 +471,7 @@ fn wait_for_device(
             log(format!(
                 "… 救援: 新 USB 模式 {id} 还没有 WinUSB，正在请求管理员权限安装 —— 请在电脑上点“是”"
             ));
-            match crate::winusb::install_elevated(targets) {
+            match crate::usbhost::install_elevated(targets) {
                 Ok(()) => deadline += INSTALL_GRACE,
                 Err(e) => log(format!("✘ 救援: {e}")),
             }
@@ -700,7 +701,8 @@ mod tests {
     fn rescue_script() {
         let script = std::env::var("RESCUE_SCRIPT").expect("set RESCUE_SCRIPT");
         let target = std::env::var("RESCUE_SERIAL").ok();
-        let aoa = Aoa::open(target.as_deref()).expect("open");
+        let targets = crate::profiles::usb_targets(&crate::profiles::builtin());
+        let aoa = Aoa::open(target.as_deref(), &targets).expect("open");
         // {pw} comes from the DPAPI store for this device — never printed.
         let store = crate::secrets::PasswordStore::load(
             crate::bundle::default_base().join("passwords.dat"),
@@ -715,7 +717,6 @@ mod tests {
         drop(aoa);
         let log: LogFn = Arc::new(|l| println!("{l}"));
         let mut held = None;
-        let targets = crate::profiles::usb_targets(&crate::profiles::builtin());
         let outcome = run_workflow(&mut held, &steps, &targets, &log).expect("run");
         println!("ran {} steps ({outcome:?})", steps.len());
     }

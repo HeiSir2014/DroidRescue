@@ -108,6 +108,12 @@ struct Resources {
 }
 
 /// Adapter LUID for the zero-copy decoder, if wgpu runs on DX12 with NV12.
+#[cfg(not(windows))]
+pub fn zero_copy_adapter(_rs: &egui_wgpu::RenderState) -> Option<i64> {
+    None // D3D12 shared textures only; macOS zero-copy (IOSurface) is TODO
+}
+
+#[cfg(windows)]
 pub fn zero_copy_adapter(rs: &egui_wgpu::RenderState) -> Option<i64> {
     if !rs
         .device
@@ -350,7 +356,19 @@ fn accept(
     Ok(())
 }
 
+/// Shared textures come only from the Windows hardware decoder.
+#[cfg(not(windows))]
+fn import_nv12(
+    _device: &wgpu::Device,
+    _res: &Resources,
+    _handle: isize,
+    _size: (u32, u32),
+) -> Result<wgpu::BindGroup, String> {
+    Err("共享纹理仅支持 Windows".into())
+}
+
 /// Open the decoder's shared NV12 texture on wgpu's DX12 device (once per handle).
+#[cfg(windows)]
 fn import_nv12(
     device: &wgpu::Device,
     res: &Resources,

@@ -1,10 +1,12 @@
 //! Rescue mode: Android Open Accessory v2 HID over USB control transfers.
 //! Lets the PC act as a USB keyboard / pen / media keys for the tablet with
 //! **no USB debugging and no authorisation** (works on the lock screen) —
-//! the mechanism behind `scrcpy --otg`. Transport: native WinUSB on the
-//! tablet's MI_01 only (see usbdev.rs) — MTP and adb keep their interfaces.
+//! the mechanism behind `scrcpy --otg`. Transport (usbdev.rs): on Windows
+//! native WinUSB on a spare interface only (e.g. the Pad3's MI_01) — MTP and
+//! adb keep theirs; on macOS IOKit device requests.
 
 use crate::usbdev::UsbDevice;
+use crate::usbid::UsbTarget;
 use std::time::Duration;
 
 const REQ_GET_PROTOCOL: u8 = 51;
@@ -199,10 +201,11 @@ impl Aoa {
         &self.dev.parent
     }
 
-    /// The tablet (via its WinUSB MI_01), if it speaks AOA ≥ 2. Refuses when
-    /// more than one prepared tablet is attached, or when `serial` differs.
-    pub fn open(serial: Option<&str>) -> Result<Aoa, String> {
-        let dev = UsbDevice::open(serial)?;
+    /// The device (via one of the profiles' rescue `targets`), if it speaks
+    /// AOA ≥ 2. Refuses when more than one prepared device is attached, or
+    /// when `serial` differs.
+    pub fn open(serial: Option<&str>, targets: &[UsbTarget]) -> Result<Aoa, String> {
+        let dev = UsbDevice::open(serial, targets)?;
         let mut buf = [0u8; 2];
         let protocol = match dev.control(VENDOR_IN, REQ_GET_PROTOCOL, 0, 0, &mut buf) {
             Ok(2) => u16::from_le_bytes(buf),
@@ -410,7 +413,8 @@ mod tests {
     #[test]
     #[ignore]
     fn aoa_probe() {
-        let mut aoa = Aoa::open(None).expect("open");
+        let targets = crate::profiles::usb_targets(&crate::profiles::builtin());
+        let mut aoa = Aoa::open(None, &targets).expect("open");
         println!("found: {}", aoa.description);
         aoa.register_all().expect("register");
         println!("registered keyboard/mouse/consumer");

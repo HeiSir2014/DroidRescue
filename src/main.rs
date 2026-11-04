@@ -5,10 +5,18 @@ mod aoa;
 mod audio;
 mod bundle;
 mod checkup;
+#[cfg(windows)]
+mod chrome;
+#[cfg(target_os = "macos")]
+#[path = "macos/chrome.rs"]
 mod chrome;
 mod control;
 mod decoder;
+#[cfg(windows)]
 mod decoder_mf;
+#[cfg(target_os = "macos")]
+#[path = "macos/decoder_vt.rs"]
+mod decoder_vt;
 mod geometry;
 mod input;
 mod mirror;
@@ -18,11 +26,22 @@ mod rescue;
 mod secrets;
 mod skin;
 mod theme;
+#[cfg(windows)]
 mod usbdev;
+#[cfg(target_os = "macos")]
+#[path = "macos/usbdev.rs"]
+mod usbdev;
+/// The rescue's USB host side: WinUSB binding on Windows, nothing on macOS.
+#[cfg(target_os = "macos")]
+#[path = "macos/usbhost.rs"]
+mod usbhost;
 mod usbid;
 mod video;
 mod widgets;
+#[cfg(windows)]
 mod winusb;
+#[cfg(windows)]
+use winusb as usbhost;
 
 use adb::{Device, Tools};
 use control::{KeyAction, MotionAction, POINTER_ID_FINGER, Position};
@@ -80,6 +99,8 @@ struct Shared {
     /// Every USB function present, driver or not: recognises a device by
     /// its profile's `usb` ids on a PC that never saw it over adb.
     usb_present: Vec<usbid::UsbTarget>,
+    /// Rescue USB functions declared by the profiles (for the poller).
+    usb_targets: Vec<usbid::UsbTarget>,
     tasks: Vec<String>,
     log: Vec<String>,
 }
@@ -131,13 +152,45 @@ fn log_result(shared: &SharedRef, what: &str, result: Result<String, String>) {
 
 /// `<Documents>\DroidRescue 备份` — never a machine-specific drive letter.
 fn default_backup_dir() -> String {
-    let home = std::env::var_os("USERPROFILE")
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     home.join("Documents")
         .join("DroidRescue 备份")
         .display()
         .to_string()
+}
+
+/// Window decorations. Windows: none — egui paints the caption and frame,
+/// chrome.rs hit-tests them natively. macOS: the native window with a
+/// transparent full-size title bar, so the traffic lights, resizing,
+/// shadow and rounded corners stay native and our caption shows through.
+fn native_chrome(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    if cfg!(target_os = "macos") {
+        builder
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+    } else {
+        builder.with_decorations(false)
+    }
+}
+
+/// Room at the caption's left for the macOS traffic lights.
+const CAPTION_INSET: f32 = if cfg!(target_os = "macos") { 72.0 } else { 0.0 };
+/// The caption draws its own minimise / maximise / close buttons (Windows).
+const OWN_CAPTION_BUTTONS: bool = !cfg!(target_os = "macos");
+
+/// Notepad on Windows, the default text editor (TextEdit) on macOS.
+fn open_in_text_editor(path: &std::path::Path) -> std::io::Result<std::process::Child> {
+    if cfg!(windows) {
+        std::process::Command::new("notepad.exe").arg(path).spawn()
+    } else {
+        std::process::Command::new("open")
+            .arg("-t")
+            .arg(path)
+            .spawn()
+    }
 }
 
 /// Rescue profiles; writes a commented starter file on first run so users
@@ -239,10 +292,11 @@ fn spawn_poller(tools: Tools, shared: SharedRef, ctx: egui::Context) {
                 ),
                 None => (None, None, None),
             };
-            let usb_serials = usbdev::present_serials();
-            let usb_present = winusb::survey()
+            let targets = shared.lock().unwrap().usb_targets.clone();
+            let usb_serials = usbdev::present_serials(&targets);
+            let usb_present = usbhost::survey()
                 .iter()
-                .filter_map(winusb::UsbEntry::target)
+                .filter_map(usbid::UsbEntry::target)
                 .collect();
             {
                 let mut s = shared.lock().unwrap();
@@ -394,6 +448,7 @@ impl PadApp {
         let shared: SharedRef = Arc::default();
         let shared_for_rescue = shared.clone();
         let profile_list = load_profiles(&shared);
+        shared.lock().unwrap().usb_targets = profiles::usb_targets(&profile_list);
         let tools = match Tools::locate() {
             Ok(t) => {
                 log(
@@ -470,8 +525,9 @@ impl PadApp {
     /// (Re)load the profiles and hand their USB functions to the rescue.
     fn reload_profiles(&mut self) {
         self.profiles = load_profiles(&self.shared);
-        self.rescue
-            .set_targets(profiles::usb_targets(&self.profiles));
+        let targets = profiles::usb_targets(&self.profiles);
+        self.shared.lock().unwrap().usb_targets = targets.clone();
+        self.rescue.set_targets(targets);
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -760,8 +816,19 @@ impl PadApp {
 
     /// Draws the title bar; returns the left x of the caption controls.
     fn caption(&mut self, ui: &mut egui::Ui, snap: &Snapshot, maximized: bool) -> f32 {
-        let (rect, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), CAPTION_H), egui::Sense::hover());
+        let (rect, drag) = ui.allocate_exact_size(
+            vec2(ui.available_width(), CAPTION_H),
+            egui::Sense::click_and_drag(),
+        );
+        // On Windows the caption is non-client (chrome.rs), so these events
+        // only arrive on macOS: drag moves the window, double-click zooms.
+        if drag.drag_started() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        if drag.double_clicked() {
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+        }
         let p = ui.painter();
         p.rect_filled(rect, 0.0, theme::c().surface);
         p.line_segment(
@@ -771,7 +838,7 @@ impl PadApp {
 
         let y = rect.center().y;
         let mark = p.text(
-            pos2(rect.left() + 14.0, y),
+            pos2(rect.left() + 14.0 + CAPTION_INSET, y),
             Align2::LEFT_CENTER,
             "安卓救援宝",
             theme::strong_font(15.0),
@@ -838,20 +905,22 @@ impl PadApp {
                 controls_left = controls_left.min(r.rect.left());
                 r
             };
-            if button(ui, CaptionIcon::Close, "关闭").clicked() {
-                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-            }
-            let (icon, tip) = if maximized {
-                (CaptionIcon::Restore, "还原")
-            } else {
-                (CaptionIcon::Maximize, "最大化")
-            };
-            if button(ui, icon, tip).clicked() {
-                ui.ctx()
-                    .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
-            }
-            if button(ui, CaptionIcon::Minimize, "最小化").clicked() {
-                ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+            if OWN_CAPTION_BUTTONS {
+                if button(ui, CaptionIcon::Close, "关闭").clicked() {
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+                }
+                let (icon, tip) = if maximized {
+                    (CaptionIcon::Restore, "还原")
+                } else {
+                    (CaptionIcon::Maximize, "最大化")
+                };
+                if button(ui, icon, tip).clicked() {
+                    ui.ctx()
+                        .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                }
+                if button(ui, CaptionIcon::Minimize, "最小化").clicked() {
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+                }
             }
             if self.mirroring() && button(ui, CaptionIcon::Swap, "控制栏换边").clicked() {
                 self.side = self.side.flipped();
@@ -1429,9 +1498,7 @@ impl PadApp {
             if widgets::link(ui, "编辑机型配置")
                 .on_hover_text(profiles::path().display().to_string())
                 .clicked()
-                && let Err(e) = std::process::Command::new("notepad.exe")
-                    .arg(profiles::path())
-                    .spawn()
+                && let Err(e) = open_in_text_editor(&profiles::path())
             {
                 log(&self.shared, format!("✘ 打开机型配置失败: {e}"));
             }
@@ -1463,7 +1530,7 @@ impl PadApp {
         ui.horizontal(|ui| {
             if widgets::link(ui, "扫描").clicked() || self.checkup.is_none() {
                 let targets = profiles::usb_targets(&self.profiles);
-                self.checkup = Some(checkup::rows(&winusb::survey(), &targets));
+                self.checkup = Some(checkup::rows(&usbhost::survey(), &targets));
             }
             if let Some(rows) = &self.checkup
                 && widgets::link(ui, "复制报告").clicked()
@@ -1515,7 +1582,7 @@ impl PadApp {
             .on_hover_text("使用 Windows 自带、微软签名的 WinUsb 驱动，只作用于机型配置里声明的救援接口（如 Pad3 的虚拟光驱接口）；MTP 文件传输不受影响。设备需插着。开始救援时也会自动请求。")
             .clicked()
         {
-            match winusb::install_elevated(&profiles::usb_targets(&self.profiles)) {
+            match usbhost::install_elevated(&profiles::usb_targets(&self.profiles)) {
                 Ok(()) => log(&self.shared, "… 已请求管理员权限安装 WinUSB，结果见日志"),
                 Err(e) => log(&self.shared, format!("✘ {e}")),
             }
@@ -1932,7 +1999,10 @@ impl eframe::App for PadApp {
                                 });
                         });
                 });
-                widgets::window_frame(ui, focused);
+                if OWN_CAPTION_BUTTONS {
+                    // macOS draws its own window border.
+                    widgets::window_frame(ui, focused);
+                }
             });
     }
 
@@ -1941,11 +2011,16 @@ impl eframe::App for PadApp {
     }
 }
 
-/// DX12 (so decoder textures can be shared in) and NV12 sampling when the
-/// adapter supports it; otherwise video falls back to the CPU path.
+/// DX12 on Windows (so decoder textures can be shared in), Metal on macOS;
+/// NV12 sampling when the adapter supports it, otherwise video uses the
+/// CPU (I420 upload) path.
 fn zero_copy_wgpu_setup() -> egui_wgpu::WgpuSetup {
     let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    setup.instance_descriptor.backends = wgpu::Backends::DX12;
+    setup.instance_descriptor.backends = if cfg!(windows) {
+        wgpu::Backends::DX12
+    } else {
+        wgpu::Backends::METAL
+    };
     let base = setup.device_descriptor.clone();
     setup.device_descriptor = Arc::new(move |adapter| {
         let mut desc = base(adapter);
@@ -1964,10 +2039,10 @@ fn main() -> eframe::Result {
 
     // Elevated helper mode (started by the rescue via UAC): bind the in-box
     // WinUSB driver to the given rescue functions, log the outcome, exit.
-    if std::env::args().nth(1).as_deref() == Some(winusb::INSTALL_FLAG) {
+    if std::env::args().nth(1).as_deref() == Some(usbhost::INSTALL_FLAG) {
         let shared: SharedRef = Arc::default();
         let targets = usbid::UsbTarget::parse_list(&std::env::args().nth(2).unwrap_or_default());
-        match targets.and_then(|t| winusb::install(&t)) {
+        match targets.and_then(|t| usbhost::install(&t)) {
             Ok(ids) => log(&shared, format!("✔ WinUSB 已安装到 {}", ids.join(", "))),
             Err(e) => log(&shared, format!("✘ WinUSB 安装失败: {e}")),
         }
@@ -1979,11 +2054,12 @@ fn main() -> eframe::Result {
     // the very first launch (no saved state yet).
     let first_launch = !window_state.exists();
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(APP_TITLE)
-            .with_decorations(false)
-            .with_inner_size(DEFAULT_SIZE)
-            .with_min_inner_size(MIN_SIZE),
+        viewport: native_chrome(
+            egui::ViewportBuilder::default()
+                .with_title(APP_TITLE)
+                .with_inner_size(DEFAULT_SIZE)
+                .with_min_inner_size(MIN_SIZE),
+        ),
         // Remember position/size across launches; centre on first launch.
         persist_window: true,
         persistence_path: Some(window_state),
@@ -1991,9 +2067,14 @@ fn main() -> eframe::Result {
         // Latency: present as soon as a frame is ready, at most one frame queued.
         wgpu_options: egui_wgpu::WgpuConfiguration {
             surface: egui_wgpu::SurfaceConfig {
-                // Vsync'd but never blocks: each vblank shows the newest frame
-                // (no tearing like Immediate, no queueing like Fifo).
-                present_mode: wgpu::PresentMode::Mailbox,
+                // Windows: vsync'd but never blocks — each vblank shows the
+                // newest frame (no tearing like Immediate, no queueing like
+                // Fifo). Metal has no Mailbox; Fifo with one frame in flight.
+                present_mode: if cfg!(windows) {
+                    wgpu::PresentMode::Mailbox
+                } else {
+                    wgpu::PresentMode::Fifo
+                },
                 desired_maximum_frame_latency: Some(1),
             },
             wgpu_setup: zero_copy_wgpu_setup(),

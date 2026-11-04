@@ -9,6 +9,11 @@
 
 系统要求：Windows 10/11 64 位，显卡支持 DirectX 12。
 
+macOS（12 及以上，Apple 芯片）：打开 dmg，把「DroidRescue」拖进「应用程序」。
+首次打开请右键 →「打开」（暂未做开发者签名）。数据目录为
+~/Library/Application Support/DroidRescue；锁屏密码用钥匙串里的密钥加密。
+macOS 救援不需要安装任何驱动、也不会请求管理员权限。
+
 
 普通使用（设备已开启 USB 调试）
 ------------------------------

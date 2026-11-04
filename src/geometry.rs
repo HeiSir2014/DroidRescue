@@ -20,6 +20,7 @@ impl Side {
 /// New window left edge when its width changes from `width` to `new_width`
 /// so that the control rail (on `rail` side) stays put on screen; the video
 /// stage grows/shrinks on the other side. Clamped into `[work_left, work_right]`.
+#[cfg_attr(not(windows), allow(dead_code))] // used by the Win32 chrome
 pub fn resize_keep_rail(
     left: i32,
     width: i32,
@@ -38,6 +39,7 @@ pub fn resize_keep_rail(
 // ───────────────────────── hit-testing ─────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))] // used by the Win32 chrome
 pub enum Hit {
     Client,
     Caption,
@@ -97,6 +99,7 @@ impl Default for ChromeLayout {
 
 /// Classify a window-local point. Resize borders win over the caption so the
 /// top edge stays grabbable; caption controls stay client so the UI gets clicks.
+#[cfg_attr(not(windows), allow(dead_code))] // used by the Win32 chrome
 pub fn hit_test(x: i32, y: i32, width: i32, height: i32, layout: &ChromeLayout) -> Hit {
     let b = layout.border;
     let e = layout.resizable;

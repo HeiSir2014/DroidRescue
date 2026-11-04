@@ -73,24 +73,7 @@ struct Present {
     dev: SP_DEVINFO_DATA,
 }
 
-/// A present USB device or interface, for diagnostics and target matching.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UsbEntry {
-    pub id: String,
-    /// Bound driver service (`WinUSB`, `WUDFWpdMtp`, …); empty = no driver.
-    pub service: String,
-    pub description: String,
-}
-
-impl UsbEntry {
-    pub fn target(&self) -> Option<UsbTarget> {
-        UsbTarget::of_instance(&self.id)
-    }
-
-    pub fn has_winusb(&self) -> bool {
-        self.service.eq_ignore_ascii_case("WinUSB")
-    }
-}
+pub use crate::usbid::UsbEntry;
 
 /// Every present USB device and interface (read-only; no elevation).
 pub fn survey() -> Vec<UsbEntry> {
@@ -98,6 +81,7 @@ pub fn survey() -> Vec<UsbEntry> {
         .map(|(_, all)| {
             all.into_iter()
                 .map(|p| UsbEntry {
+                    ready: p.service.eq_ignore_ascii_case("WinUSB"),
                     id: p.id,
                     service: p.service,
                     description: p.description,
@@ -179,20 +163,9 @@ unsafe fn registry_string(set: HDEVINFO, dev: &SP_DEVINFO_DATA, prop: u32) -> Op
     })
 }
 
-/// Target instances in `entries` that do not have WinUSB yet — e.g. the
-/// adb-mode interface the first time the device switches into it, or any
-/// target on a USB port this PC has not seen it on.
-pub fn unbound(entries: &[UsbEntry], targets: &[UsbTarget]) -> Vec<String> {
-    entries
-        .iter()
-        .filter(|e| usbid::is_target(targets, &e.id) && !e.has_winusb())
-        .map(|e| e.id.clone())
-        .collect()
-}
-
-/// [`unbound`] for the devices present right now. Read-only.
+/// Targets present right now without WinUSB. Read-only.
 pub fn unbound_targets(targets: &[UsbTarget]) -> Vec<String> {
-    unbound(&survey(), targets)
+    usbid::unbound(&survey(), targets)
 }
 
 /// Bind the in-box WinUSB driver to every present instance of `targets`.
@@ -377,35 +350,6 @@ mod tests {
             vec![u16::from(b'{'), u16::from(b'A'), u16::from(b'}'), 0, 0]
         );
         assert_eq!(INTERFACE_GUID.len(), 38, "braced GUID");
-    }
-
-    fn entry(id: &str, service: &str) -> UsbEntry {
-        UsbEntry {
-            id: id.into(),
-            service: service.into(),
-            description: String::new(),
-        }
-    }
-
-    /// The second-PC failure: the adb-mode interface had no driver yet.
-    #[test]
-    fn finds_targets_without_winusb_only() {
-        let targets = UsbTarget::parse_list("2D95:6012:01, 2D95:6013:01").unwrap();
-        let entries = [
-            entry(r"USB\VID_2D95&PID_6013\SER0123456789AB", "usbccgp"),
-            entry(
-                r"USB\VID_2D95&PID_6013&MI_00\7&24A3E323&0&0000",
-                "WUDFWpdMtp",
-            ),
-            entry(r"USB\VID_2D95&PID_6013&MI_01\7&24A3E323&0&0001", ""),
-            entry(r"USB\VID_2D95&PID_6013&MI_02\7&24A3E323&0&0002", "WinUSB"),
-            entry(r"USB\VID_2D95&PID_6012&MI_01\7&37F57971&0&0001", "WinUSB"),
-        ];
-        assert_eq!(
-            unbound(&entries, &targets),
-            [r"USB\VID_2D95&PID_6013&MI_01\7&24A3E323&0&0001"]
-        );
-        assert!(unbound(&entries, &[]).is_empty(), "no targets, no binds");
     }
 
     #[test]

@@ -60,3 +60,40 @@ jobs:
           path: |
             dist/*.7z
             dist/*.zip
+
+  macos:
+    runs-on: macos-latest # Apple Silicon
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (version pinned by rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Format (rustfmt defaults)
+        run: cargo fmt --check
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Fetch vendored runtime (scrcpy v5.0.1, SHA256-pinned)
+        run: sh scripts/fetch-vendor.sh
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test (includes a real VideoToolbox decode)
+        run: cargo test
+
+      - name: Package (.app + .dmg)
+        run: sh scripts/package-macos.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: DroidRescue-macos-arm64
+          path: dist/*.dmg

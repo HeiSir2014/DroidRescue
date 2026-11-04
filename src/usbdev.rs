@@ -7,6 +7,7 @@
 //! (`winusb::INTERFACE_GUID`) side-steps that; control transfers on endpoint
 //! 0 through it reach the whole device, which is all AOA needs.
 
+use crate::usbid::UsbTarget;
 use crate::winusb::INTERFACE_GUID_VALUE;
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_IDW, CM_Get_Parent, CR_SUCCESS, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
@@ -81,7 +82,8 @@ fn device_id(devinst: u32) -> Option<String> {
         })
 }
 
-fn enumerate() -> Result<Vec<Found>, String> {
+/// WinUSB interfaces with our device interface GUID that are `targets`.
+fn enumerate(targets: &[UsbTarget]) -> Result<Vec<Found>, String> {
     // SAFETY: SetupAPI enumeration with correctly sized structs; the detail
     // buffer is sized from the first call's `required` and 8-byte aligned.
     unsafe {
@@ -149,6 +151,9 @@ fn enumerate() -> Result<Vec<Found>, String> {
             // The USB device owning the interface: its composite parent, or
             // itself when a whole non-composite device is the target.
             let own = device_id(info.DevInst).unwrap_or_default();
+            if !crate::usbid::is_target(targets, &own) {
+                continue; // bound by us once, but no profile declares it now
+            }
             let mut parent_inst = 0u32;
             let parent = if !is_interface(&own) {
                 own
@@ -170,8 +175,8 @@ fn enumerate() -> Result<Vec<Found>, String> {
 
 /// Serials of tablets currently plugged in with the rescue interface ready
 /// (enumeration only — nothing is opened, so it never disturbs MTP/adb).
-pub fn present_serials() -> Vec<String> {
-    enumerate()
+pub fn present_serials(targets: &[UsbTarget]) -> Vec<String> {
+    enumerate(targets)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|f| f.serial)
@@ -180,8 +185,8 @@ pub fn present_serials() -> Vec<String> {
 
 /// Parent instance ids (`USB\VID_2D95&PID_6012\<serial>`) of the tablets
 /// with the rescue interface ready — the PID tells USB modes apart.
-pub fn present_parents() -> Vec<String> {
-    enumerate()
+pub fn present_parents(targets: &[UsbTarget]) -> Vec<String> {
+    enumerate(targets)
         .unwrap_or_default()
         .into_iter()
         .map(|f| f.parent)
@@ -190,8 +195,8 @@ pub fn present_parents() -> Vec<String> {
 
 impl UsbDevice {
     /// The single tablet MI_01 bound to WinUSB (optionally a specific serial).
-    pub fn open(serial: Option<&str>) -> Result<UsbDevice, String> {
-        let mut all = enumerate()?;
+    pub fn open(serial: Option<&str>, targets: &[UsbTarget]) -> Result<UsbDevice, String> {
+        let mut all = enumerate(targets)?;
         if let Some(want) = serial {
             all.retain(|f| f.serial.as_deref() == Some(want));
         }

@@ -6,7 +6,10 @@
 use crate::adb::Tools;
 use crate::audio;
 use crate::control;
-use crate::decoder::{Decoder, FfmpegDecoder, Frame};
+#[cfg(windows)]
+use crate::decoder::FfmpegDecoder;
+use crate::decoder::{Decoder, Frame};
+#[cfg(windows)]
 use crate::decoder_mf::MfDecoder;
 use crate::protocol::{self, Header};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -385,7 +388,18 @@ fn connect_with_dummy(port: u16) -> Result<TcpStream, String> {
     Err("连接 scrcpy-server 超时（平板上 server 未启动？）".into())
 }
 
+/// macOS: VideoToolbox (hardware; read back to the CPU for now).
+#[cfg(target_os = "macos")]
+fn open_decoder(
+    _gpu_luid: Option<i64>,
+    _dll_dir: &std::path::Path,
+    _log: &LogFn,
+) -> Result<Box<dyn Decoder>, String> {
+    Ok(Box::new(crate::decoder_vt::VtDecoder::new()))
+}
+
 /// Hardware zero-copy when possible, FFmpeg on the CPU otherwise.
+#[cfg(windows)]
 fn open_decoder(
     gpu_luid: Option<i64>,
     dll_dir: &std::path::Path,

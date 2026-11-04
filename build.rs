@@ -1,12 +1,15 @@
-//! Embeds the runtime pieces from vendor/scrcpy (adb, scrcpy-server, FFmpeg)
-//! into the executable. Generates `$OUT_DIR/bundle.rs` with `BUNDLE_ID`,
-//! `BUNDLE_FILES` and `SERVER_VERSION`.
+//! Embeds the runtime pieces from vendor/ (adb, scrcpy-server, and FFmpeg on
+//! Windows) into the executable. Generates `$OUT_DIR/bundle.rs` with
+//! `BUNDLE_ID`, `BUNDLE_FILES` and `SERVER_VERSION`.
+//!
+//! Fetched by `scripts/fetch-vendor.ps1` (Windows → vendor/scrcpy) or
+//! `scripts/fetch-vendor.sh` (macOS → vendor/scrcpy-macos).
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
 /// Only what the native client needs (no scrcpy.exe / SDL).
-const FILES: &[&str] = &[
+const WINDOWS_FILES: &[&str] = &[
     "adb.exe",
     "AdbWinApi.dll",
     "AdbWinUsbApi.dll",
@@ -16,14 +19,22 @@ const FILES: &[&str] = &[
     "swresample-7.dll",
     "LICENSE.txt",
 ];
+/// macOS decodes with VideoToolbox: no FFmpeg.
+const MACOS_FILES: &[&str] = &["adb", "scrcpy-server", "LICENSE.txt"];
 
 fn main() {
+    let macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+    let (vendor, files) = if macos {
+        ("scrcpy-macos", MACOS_FILES)
+    } else {
+        ("scrcpy", WINDOWS_FILES)
+    };
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("vendor")
-        .join("scrcpy");
+        .join(vendor);
     println!("cargo:rerun-if-changed={}", dir.display());
 
-    let entries: Vec<PathBuf> = FILES.iter().map(|f| dir.join(f)).collect();
+    let entries: Vec<PathBuf> = files.iter().map(|f| dir.join(f)).collect();
     for p in &entries {
         assert!(p.is_file(), "missing bundle file {}", p.display());
     }

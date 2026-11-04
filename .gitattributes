@@ -2,3 +2,5 @@
 * text=auto eol=lf
 *.ttf binary
 *.png binary
+*.h264 binary
+*.sh text eol=lf

@@ -19,13 +19,18 @@ const MIGRATED: &[&str] = &[
     "window.ron",
 ];
 
+/// Per-user application data root: `%LOCALAPPDATA%` on Windows,
+/// `~/Library/Application Support` on macOS (falls back to the temp dir).
 fn local_app_data() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+    let dir = if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
+    } else {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    };
+    dir.unwrap_or_else(std::env::temp_dir)
 }
 
-/// `%LOCALAPPDATA%\DroidRescue` (falls back to the temp dir).
+/// `%LOCALAPPDATA%\DroidRescue` / `~/Library/Application Support/DroidRescue`.
 pub fn default_base() -> PathBuf {
     local_app_data().join(APP_DIR)
 }
@@ -73,7 +78,14 @@ fn extract_files(base: &Path, id: &str, files: &[(&str, &[u8])]) -> io::Result<P
     }
     std::fs::create_dir_all(&tmp)?;
     for (name, bytes) in files {
-        std::fs::write(tmp.join(name), bytes)?;
+        let path = tmp.join(name);
+        std::fs::write(&path, bytes)?;
+        // adb must be executable (include_bytes! keeps no file modes).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        }
     }
     std::fs::write(tmp.join(COMPLETE_MARKER), id)?;
 
@@ -140,16 +152,22 @@ mod tests {
     #[test]
     fn real_bundle_contains_runtime_pieces_only() {
         let names: Vec<_> = BUNDLE_FILES.iter().map(|(n, _)| *n).collect();
-        for needed in [
-            "adb.exe",
-            "scrcpy-server",
-            "avcodec-63.dll",
-            "avutil-61.dll",
-        ] {
-            assert!(names.contains(&needed), "missing {needed}");
+        let needed: &[&str] = if cfg!(windows) {
+            &[
+                "adb.exe",
+                "scrcpy-server",
+                "avcodec-63.dll",
+                "avutil-61.dll",
+            ]
+        } else {
+            &["adb", "scrcpy-server"]
+        };
+        for needed in needed {
+            assert!(names.contains(needed), "missing {needed}");
         }
-        assert!(!names.contains(&"scrcpy.exe"));
-        assert!(!names.contains(&"SDL3.dll"));
+        for unwanted in ["scrcpy.exe", "scrcpy", "SDL3.dll"] {
+            assert!(!names.contains(&unwanted), "{unwanted} is not needed");
+        }
         assert_eq!(SERVER_VERSION, "5.0.1");
     }
 

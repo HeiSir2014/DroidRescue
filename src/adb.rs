@@ -10,6 +10,9 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// adb's file name in the bundle.
+const ADB: &str = if cfg!(windows) { "adb.exe" } else { "adb" };
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Device {
     pub serial: String,
@@ -173,12 +176,11 @@ impl Tools {
         let base = crate::bundle::default_base();
         let dir = crate::bundle::extract_to(&base)
             .map_err(|e| format!("解压内置组件到 {} 失败: {e}", base.display()))?;
-        Tools::in_dir(&dir)
-            .ok_or_else(|| format!("{} 中缺少 adb.exe / scrcpy-server", dir.display()))
+        Tools::in_dir(&dir).ok_or_else(|| format!("{} 中缺少 {ADB} / scrcpy-server", dir.display()))
     }
 
     fn in_dir(dir: &Path) -> Option<Tools> {
-        let adb = dir.join("adb.exe");
+        let adb = dir.join(ADB);
         let server = dir.join("scrcpy-server");
         (adb.is_file() && server.is_file()).then(|| Tools {
             adb,

@@ -194,9 +194,14 @@ fn install_fonts(ctx: &egui::Context) {
     );
 
     // Rare CJK outside the GB2312 subset falls back to the system font.
-    let system_cjk = [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simhei.ttf"]
-        .iter()
-        .find_map(|p| std::fs::read(p).ok());
+    let system_cjk = [
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\simhei.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+    ]
+    .iter()
+    .find_map(|p| std::fs::read(p).ok());
     if let Some(bytes) = system_cjk {
         fonts
             .font_data

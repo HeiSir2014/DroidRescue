@@ -1,20 +1,17 @@
-//! Per-device lock-screen passwords, encrypted with Windows DPAPI
-//! (bound to the current Windows user; useless if the file is copied).
+//! Per-device lock-screen passwords, sealed per OS user so the file is
+//! useless when copied: Windows DPAPI, or on macOS AES-256-GCM with a
+//! random key kept in the login Keychain.
 //!
-//! File format: one `device_id<TAB>hex(dpapi_blob)` per line.
+//! File format: one `device_id<TAB>hex(sealed_blob)` per line.
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
-use windows_sys::Win32::Foundation::LocalFree;
-use windows_sys::Win32::Security::Cryptography::{
-    CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
-};
 
-/// Scopes the blobs to this app (other DPAPI users can't decrypt them blindly).
-/// Kept from the padctl era on purpose: changing it would make every PIN
-/// saved before the rename undecryptable.
-const ENTROPY: &[u8] = b"padctl/lockscreen/v1";
+#[cfg(windows)]
+use dpapi::{protect, unprotect};
+#[cfg(target_os = "macos")]
+use keychain::{protect, unprotect};
 
 pub struct PasswordStore {
     path: PathBuf,
@@ -104,69 +101,171 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
-    CRYPT_INTEGER_BLOB {
-        cbData: data.len() as u32,
-        pbData: data.as_ptr().cast_mut(),
+#[cfg(windows)]
+mod dpapi {
+    use std::io;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
+    };
+
+    /// Scopes the blobs to this app (other DPAPI users can't decrypt them blindly).
+    /// Kept from the padctl era on purpose: changing it would make every PIN
+    /// saved before the rename undecryptable.
+    const ENTROPY: &[u8] = b"padctl/lockscreen/v1";
+
+    fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
+        CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr().cast_mut(),
+        }
+    }
+
+    /// Copy a DPAPI output blob and free it with LocalFree as the API requires.
+    fn take_blob(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
+        // SAFETY: DPAPI returned a valid buffer of cbData bytes that we own.
+        let bytes = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) }.to_vec();
+        unsafe { LocalFree(out.pbData.cast()) };
+        bytes
+    }
+
+    pub fn protect(plain: &[u8]) -> io::Result<Vec<u8>> {
+        let input = blob(plain);
+        let entropy = blob(ENTROPY);
+        let mut out = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+        // SAFETY: all pointers reference live buffers for the duration of the call.
+        let ok = unsafe {
+            CryptProtectData(
+                &input,
+                std::ptr::null(),
+                &entropy,
+                std::ptr::null(),
+                std::ptr::null(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(take_blob(out))
+    }
+
+    pub fn unprotect(sealed: &[u8]) -> io::Result<Vec<u8>> {
+        let input = blob(sealed);
+        let entropy = blob(ENTROPY);
+        let mut out = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+        // SAFETY: as above.
+        let ok = unsafe {
+            CryptUnprotectData(
+                &input,
+                std::ptr::null_mut(),
+                &entropy,
+                std::ptr::null(),
+                std::ptr::null(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(take_blob(out))
     }
 }
 
-/// Copy a DPAPI output blob and free it with LocalFree as the API requires.
-fn take_blob(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
-    // SAFETY: DPAPI returned a valid buffer of cbData bytes that we own.
-    let bytes = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) }.to_vec();
-    unsafe { LocalFree(out.pbData.cast()) };
-    bytes
-}
+/// macOS: AES-256-GCM; the key is 32 random bytes stored as a generic
+/// password in the login Keychain (created on first use). Blob layout:
+/// 12-byte nonce ‖ ciphertext+tag.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    use security_framework::passwords::{get_generic_password, set_generic_password};
+    use security_framework::random::SecRandom;
+    use std::io;
 
-fn protect(plain: &[u8]) -> io::Result<Vec<u8>> {
-    let input = blob(plain);
-    let entropy = blob(ENTROPY);
-    let mut out = CRYPT_INTEGER_BLOB {
-        cbData: 0,
-        pbData: std::ptr::null_mut(),
-    };
-    // SAFETY: all pointers reference live buffers for the duration of the call.
-    let ok = unsafe {
-        CryptProtectData(
-            &input,
-            std::ptr::null(),
-            &entropy,
-            std::ptr::null(),
-            std::ptr::null(),
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut out,
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(take_blob(out))
-}
+    const SERVICE: &str = "DroidRescue";
+    /// Binds the ciphertext to its purpose.
+    const AAD: &[u8] = b"droidrescue/lockscreen/v1";
+    const NONCE_LEN: usize = 12;
 
-fn unprotect(sealed: &[u8]) -> io::Result<Vec<u8>> {
-    let input = blob(sealed);
-    let entropy = blob(ENTROPY);
-    let mut out = CRYPT_INTEGER_BLOB {
-        cbData: 0,
-        pbData: std::ptr::null_mut(),
-    };
-    // SAFETY: as above.
-    let ok = unsafe {
-        CryptUnprotectData(
-            &input,
-            std::ptr::null_mut(),
-            &entropy,
-            std::ptr::null(),
-            std::ptr::null(),
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut out,
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
+    const ACCOUNT: &str = "pin-key";
+
+    fn other(e: impl std::fmt::Display) -> io::Error {
+        io::Error::other(e.to_string())
     }
-    Ok(take_blob(out))
+
+    fn random<const N: usize>() -> io::Result<[u8; N]> {
+        let mut bytes = [0u8; N];
+        SecRandom::default().copy_bytes(&mut bytes).map_err(other)?;
+        Ok(bytes)
+    }
+
+    /// The Keychain-held key, created on first use.
+    pub fn keychain_key() -> io::Result<Vec<u8>> {
+        match get_generic_password(SERVICE, ACCOUNT) {
+            Ok(key) if key.len() == 32 => Ok(key),
+            _ => {
+                let key = random::<32>()?;
+                set_generic_password(SERVICE, ACCOUNT, &key).map_err(other)?;
+                Ok(key.to_vec())
+            }
+        }
+    }
+
+    /// Unit tests use a per-process key in memory: they never touch (or
+    /// litter) the user's Keychain, and a rebuilt test binary never trips
+    /// a Keychain access prompt.
+    fn key() -> io::Result<Vec<u8>> {
+        if cfg!(test) {
+            static TEST_KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+            Ok(TEST_KEY
+                .get_or_init(|| random::<32>().expect("random"))
+                .to_vec())
+        } else {
+            keychain_key()
+        }
+    }
+
+    fn cipher() -> io::Result<Aes256Gcm> {
+        Aes256Gcm::new_from_slice(&key()?).map_err(other)
+    }
+
+    pub fn protect(plain: &[u8]) -> io::Result<Vec<u8>> {
+        let nonce = random::<NONCE_LEN>()?;
+        let sealed = cipher()?
+            .encrypt(
+                &Nonce::from(nonce),
+                Payload {
+                    msg: plain,
+                    aad: AAD,
+                },
+            )
+            .map_err(other)?;
+        Ok([nonce.as_slice(), &sealed].concat())
+    }
+
+    pub fn unprotect(sealed: &[u8]) -> io::Result<Vec<u8>> {
+        let (nonce, body) = sealed
+            .split_first_chunk::<NONCE_LEN>()
+            .ok_or_else(|| other("密文太短"))?;
+        cipher()?
+            .decrypt(
+                &Nonce::from(*nonce),
+                Payload {
+                    msg: body,
+                    aad: AAD,
+                },
+            )
+            .map_err(|_| other("无法解密（钥匙串中的密钥已变？）"))
+    }
 }
 
 #[cfg(test)]
@@ -253,5 +352,16 @@ mod tests {
     fn missing_file_is_an_empty_store() {
         let store = PasswordStore::load(temp_file("missing"));
         assert!(!store.contains("anything"));
+    }
+
+    /// The real Keychain key (run by hand on a Mac; may show an access
+    /// prompt): `cargo test keychain_key -- --ignored`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn keychain_key_is_created_once_and_reused() {
+        let first = keychain::keychain_key().unwrap();
+        assert_eq!(first.len(), 32);
+        assert_eq!(keychain::keychain_key().unwrap(), first);
     }
 }
