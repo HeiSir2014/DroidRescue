@@ -1,0 +1,4 @@
+# One line-ending style for a Windows + macOS codebase.
+* text=auto eol=lf
+*.ttf binary
+*.png binary

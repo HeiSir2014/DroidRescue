@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + clippy + rustfmt)
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+
+      - name: Format (rustfmt defaults)
+        run: cargo fmt --check
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Fetch vendored runtime (scrcpy v5.0.1, SHA256-pinned)
+        shell: pwsh
+        run: ./scripts/fetch-vendor.ps1
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $stage = "dist/DroidRescue-$version-win-x64"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item target/release/droidrescue.exe "$stage/DroidRescue.exe"
+          Copy-Item docs/使用说明.txt $stage
+          7z a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=64m -ms=on "dist/DroidRescue-$version-win-x64.7z" "./$stage/*"
+          7z a -tzip -mm=Deflate -mx=9 -mfb=258 -mpass=15 "dist/DroidRescue-$version-win-x64.zip" "./$stage/*"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DroidRescue-windows-x64
+          path: |
+            dist/*.7z
+            dist/*.zip

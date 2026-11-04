@@ -1,0 +1,32 @@
+[package]
+name = "droidrescue"
+version = "0.2.0"
+description = "安卓救援宝 DroidRescue — low-latency Android mirroring and blind rescue for broken screens"
+repository = "https://github.com/HeiSir2014/DroidRescue"
+edition = "2024"
+
+[dependencies]
+cpal = "0.18.2"
+eframe = { version = "0.35.0", features = ["persistence"] }
+libloading = "0.9.0"
+raw-window-handle = "0.6"
+# Same major as wgpu-hal 29 so D3D12 interfaces can be handed to it directly.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_Security", "Win32_Security_Cryptography", "Win32_Devices_DeviceAndDriverInstallation", "Win32_System_Registry", "Win32_Devices_Usb", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
+# Smallest/fastest shipping binary: whole-program LTO, one codegen unit, no
+# debug symbols in the exe (the PDB is still written next to it).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,6 @@
+/target/
+/dist/
+*.exe
+*.pdb
+# Third-party runtime fetched by scripts/fetch-vendor.ps1 (pinned by SHA256).
+/vendor/

@@ -1,0 +1,4 @@
+# Link the MSVC C runtime statically so DroidRescue.exe runs on a clean Windows
+# without the VC++ Redistributable (the UCRT itself ships with Windows 10+).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
