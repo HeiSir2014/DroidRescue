@@ -46,6 +46,12 @@ EOF
 codesign --force --deep --sign - "$APP"
 codesign --verify --strict "$APP"
 
+# The in-app updater's package: the signed .app alone. ditto keeps the
+# signature, modes and the bundle folder (--keepParent).
+APPZIP="dist/DroidRescue-$VERSION-macos-$ARCH.app.zip"
+rm -f "$APPZIP"
+ditto -c -k --keepParent "$APP" "$APPZIP"
+
 # Drag-to-install layout.
 ln -s /Applications "$STAGE/Applications"
 DMG="dist/DroidRescue-$VERSION-macos-$ARCH.dmg"

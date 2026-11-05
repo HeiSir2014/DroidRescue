@@ -9,9 +9,17 @@ edition = "2024"
 cpal = "0.18.2"
 eframe = { version = "0.35.0", features = ["persistence"] }
 raw-window-handle = "0.6"
+# Updater: the GitHub release JSON and the SHA-256 of what it downloads.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
 # Font line metrics, read exactly as egui (epaint) reads them, to line up
 # baselines when Chinese and Latin come from different fonts.
 skrifa = "0.42"
+# Updater HTTP: blocking, on a background thread. The OS TLS stack and its
+# trust store (schannel / Security.framework), no bundled roots; the
+# Windows system proxy is honoured (common for GitHub access in China).
+ureq = { version = "3.5.1", default-features = false, features = ["native-tls-no-default", "win-system-proxy"] }
 
 [build-dependencies]
 # Windows exe icon + version info (only invoked when the target is Windows).
