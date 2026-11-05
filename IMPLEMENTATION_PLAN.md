@@ -310,3 +310,73 @@ screen edge fixed (stage opens on the far side), clamped to the work area.
 **Tests**: `resize_keep_rail` unit tests; device: right edge 1571 before,
 during and after mirroring.
 **Status**: Complete
+
+## Updater (自动更新) — Stages 19–22
+**Flow**: background check of the latest published GitHub Release →
+download this platform's package → verify SHA-256 → swap it in place of
+the running app → the title says "新版本 vX.Y.Z 已就绪 · 重启生效". Nothing
+restarts by itself: the user clicks the title badge (or just quits and
+reopens) and the new version starts. Drafts and pre-releases are never
+offered (`/releases/latest` skips both), so a draft stays a maintainer-only
+smoke test until "Publish".
+**Decisions**:
+- Feed: `GET api.github.com/repos/HeiSir2014/DroidRescue/releases/latest`
+  (unauthenticated, 60/h — we ask on start + every 6 h). Override with env
+  `DROIDRESCUE_UPDATE_FEED` (URL or local JSON file) for tests.
+- Packages the updater fetches (CI adds them to the release beside the
+  existing 7z/zip/dmg): `DroidRescue-X.Y.Z-win-x64.exe` (the bare exe —
+  everything else is embedded) and `DroidRescue-X.Y.Z-macos-arm64.app.zip`
+  (`ditto -c -k --keepParent`, so signatures/modes survive). Integrity:
+  hash listed in the release's `SHA256SUMS.txt`; a mismatch is dropped.
+- Swap without a helper process: Windows can rename a running exe →
+  `DroidRescue.exe` → `DroidRescue.exe.old`, new file → `DroidRescue.exe`;
+  macOS moves the running `.app` aside the same way. `.old` is removed on
+  the next start. Not writable (Program Files, translocated/read-only
+  `.app`, dmg) → no swap; the badge offers 下载页 instead.
+- HTTP: one small blocking client on a background thread (`ureq` with the
+  OS TLS stack: schannel / Security.framework — system trust store, no
+  bundled certs); `serde_json` for the release JSON; `sha2` for hashing.
+- Never during work: no swap and no restart while mirroring or a rescue
+  run is active — the restart button says why it is disabled.
+- Settings: 自动检查更新 (on by default, persisted) + 立即检查 + last result.
+
+## Stage 19: Release check
+**Goal**: `update.rs` decides "is there something newer for me, and which
+file": version parse/compare (`X.Y.Z`, `v` prefix, pre-release suffix →
+not offered), release JSON → (version, notes URL, my asset URL, sums URL),
+`SHA256SUMS.txt` parse. CI uploads the two updater packages.
+**Tests**: compare (0.2.0 < 0.10.0, equal → none, older → none, `-rc1` →
+none); asset pick per platform (missing asset → "manual" result); sums
+parse (two-space and `*` binary-mode lines); feed override reads a file.
+**Done**: `src/update.rs` (+ ignored `real_feed_answers`: our feed → 404 →
+up to date; `cli/cli` with a fake 0.0.1 → offered, over schannel); CI
+uploads `*.exe` / `*.app.zip`.
+**Status**: Complete
+
+## Stage 20: Download, verify, swap
+**Goal**: stream the asset to `<exe>.new` with progress, verify SHA-256,
+swap (Windows exe rename; macOS unzip with `ditto -x -k` next to the app,
+then move); cleanup `.old` / stale `.new` on start; re-check skips a
+version already staged.
+**Tests**: swap in a temp dir (old renamed, new in place, rerun is
+idempotent); hash mismatch leaves the app untouched and deletes `.new`;
+unwritable dir → manual result; ignored network test against the real
+release (`DROIDRESCUE_FAKE_VERSION=0.0.1`).
+**Status**: Not Started
+
+## Stage 21: Title badge + settings
+**Goal**: caption (Windows) / sidebar brand row + native title (macOS)
+show a green pill beside the version tag: 检查中 is silent; 下载中 37%;
+"新版本 v0.3.0 · 重启更新" (click → restart: spawn the new exe/app, exit
+cleanly through `end_mirror_now`); failures only in the log. Settings page
+row: switch, 立即检查, "已是最新 · 2 分钟前" / error text.
+**Tests**: `window_title` with a staged update; badge text per state;
+restart disabled while mirroring/running; settings persistence.
+**Status**: Not Started
+
+## Stage 22: End-to-end
+**Goal**: publish a real release (v0.3.0) and update a v0.2.x build to it
+on Windows and on the Mac; README/CHANGELOG/使用说明 explain it.
+**Tests**: manual: old build → badge appears → restart → new version in
+the title; `.old` gone on the following start.
+**Status**: Not Started

@@ -37,6 +37,9 @@ mod skin;
 #[path = "macos/surface.rs"]
 mod surface;
 mod theme;
+// Stage 19 lands the check alone; the UI that calls it is Stage 21.
+#[allow(dead_code)]
+mod update;
 #[cfg(windows)]
 mod usbdev;
 #[cfg(target_os = "macos")]

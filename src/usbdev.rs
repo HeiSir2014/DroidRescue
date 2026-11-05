@@ -10,7 +10,7 @@
 use crate::usbid::UsbTarget;
 use crate::winusb::INTERFACE_GUID_VALUE;
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_Get_Device_IDW, CM_Get_Parent, CR_SUCCESS, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
+    CM_Get_Device_IDW, CM_Get_Parent, CR_SUCCESS, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, HDEVINFO,
     SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA,
     SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
     SetupDiGetDeviceInterfaceDetailW,
@@ -109,7 +109,8 @@ fn enumerate(targets: &[UsbTarget]) -> Result<Vec<Found>, String> {
             std::ptr::null_mut(),
             DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
         );
-        if set == INVALID_HANDLE_VALUE as _ {
+        // Spelled out: another crate's `PartialEq` impls make `as _` ambiguous.
+        if set == INVALID_HANDLE_VALUE as HDEVINFO {
             return Err(last_error("枚举 WinUSB 接口"));
         }
         let mut found = Vec::new();

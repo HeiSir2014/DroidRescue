@@ -53,6 +53,8 @@ jobs:
           Copy-Item docs/使用说明.txt $stage
           7z a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=64m -ms=on "dist/DroidRescue-$version-win-x64.7z" "./$stage/*"
           7z a -tzip -mm=Deflate -mx=9 -mfb=258 -mpass=15 "dist/DroidRescue-$version-win-x64.zip" "./$stage/*"
+          # The in-app updater downloads the bare exe (everything is embedded).
+          Copy-Item target/release/droidrescue.exe "dist/DroidRescue-$version-win-x64.exe"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -60,6 +62,7 @@ jobs:
           path: |
             dist/*.7z
             dist/*.zip
+            dist/*.exe
 
   macos:
     runs-on: macos-latest # Apple Silicon
@@ -96,7 +99,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: DroidRescue-macos-arm64
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.app.zip
 
   # Tag `vX.Y.Z` → GitHub Release with every platform's package. Runs only
   # after both platforms built and passed their tests.
