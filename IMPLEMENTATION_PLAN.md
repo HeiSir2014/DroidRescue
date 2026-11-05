@@ -336,8 +336,9 @@ smoke test until "Publish".
 - HTTP: one small blocking client on a background thread (`ureq` with the
   OS TLS stack: schannel / Security.framework — system trust store, no
   bundled certs); `serde_json` for the release JSON; `sha2` for hashing.
-- Never during work: no swap and no restart while mirroring or a rescue
-  run is active — the restart button says why it is disabled.
+- Never during work: the swap only renames files (the running app is not
+  touched), but the restart is disabled while mirroring, a rescue run or a
+  task is active — the badge's tooltip says why.
 - Settings: 自动检查更新 (on by default, persisted) + 立即检查 + last result.
 
 ## Stage 19: Release check
@@ -362,7 +363,11 @@ version already staged.
 idempotent); hash mismatch leaves the app untouched and deletes `.new`;
 unwritable dir → manual result; ignored network test against the real
 release (`DROIDRESCUE_FAKE_VERSION=0.0.1`).
-**Status**: Not Started
+**Done**: `src/update_swap.rs`. Checked a full install against a local
+HTTP feed on both machines: Windows exe (34 MB, byte-identical after the
+swap; a running exe renames but can't be deleted → `cleanup` retries);
+Mac `.app.zip` (ditto → codesign verify → swap, new bundle signed).
+**Status**: Complete
 
 ## Stage 21: Title badge + settings
 **Goal**: caption (Windows) / sidebar brand row + native title (macOS)
@@ -372,7 +377,13 @@ cleanly through `end_mirror_now`); failures only in the log. Settings page
 row: switch, 立即检查, "已是最新 · 2 分钟前" / error text.
 **Tests**: `window_title` with a staged update; badge text per state;
 restart disabled while mirroring/running; settings persistence.
-**Status**: Not Started
+**Done**: `src/updater.rs` (worker, badge, relaunch), caption badge with a
+client span in the chrome hit-test (`ChromeLayout::badge`), sidebar badge
+row + native title on macOS, 设置 → 更新 card (switch persisted as
+`auto_update`). Dev builds never install. Checked on the Mac with a local
+feed: badge + title appeared, click → old process exited, new one started
+from the same path, `.old` removed.
+**Status**: Complete
 
 ## Stage 22: End-to-end
 **Goal**: publish a real release (v0.3.0) and update a v0.2.x build to it

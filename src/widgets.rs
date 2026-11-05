@@ -328,6 +328,82 @@ pub fn version_tag(p: &egui::Painter, left_center: egui::Pos2, version: &str) ->
     rect
 }
 
+/// The update pill beside the version tag ("新版本 v0.3.0 · 重启更新"),
+/// left edge at `left_center`. Green = restart ready, amber = download by
+/// hand, grey = downloading (not clickable). `enabled: false` keeps it
+/// visible but unclickable (the caller adds the reason as a tooltip).
+pub fn update_badge(
+    ui: &mut Ui,
+    left_center: egui::Pos2,
+    badge: &crate::updater::Badge,
+    enabled: bool,
+) -> Response {
+    use crate::updater::Badge;
+    let c = theme::c();
+    let fg = match badge {
+        Badge::Restart(_) => c.green,
+        Badge::Download { .. } => c.amber,
+        Badge::Progress(_) => c.text_dim,
+    };
+    const SIZE: f32 = 11.5;
+    let galley = ui
+        .painter()
+        .layout_no_wrap(badge.text().to_string(), theme::ui(SIZE), fg);
+    let rect = Rect::from_min_size(
+        pos2(left_center.x, left_center.y - 10.0),
+        vec2(galley.size().x + 30.0, 20.0),
+    );
+    let clickable = enabled && !matches!(badge, Badge::Progress(_));
+    let sense = if clickable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, ui.id().with("update-badge"), sense);
+    let hot = clickable && response.hovered();
+    let p = ui.painter();
+    let fill = match badge {
+        Badge::Progress(_) => c.surface_hi,
+        _ => fg.gamma_multiply(if hot { 0.26 } else { 0.14 }),
+    };
+    p.rect_filled(rect, 10.0, fill);
+    p.rect_stroke(
+        rect,
+        10.0,
+        Stroke::new(1.0, fg.gamma_multiply(0.5)),
+        StrokeKind::Inside,
+    );
+    // Text and arrow share one visual centre line: the pill's centre.
+    let y = rect.center().y;
+    let text_top = y - ink_center(&galley, SIZE);
+    // An up arrow: "newer".
+    let a = pos2(rect.left() + 11.5, y);
+    let stroke = Stroke::new(1.6, fg);
+    p.line_segment([pos2(a.x, a.y + 4.5), pos2(a.x, a.y - 4.5)], stroke);
+    p.line_segment([pos2(a.x - 3.5, a.y - 1.0), pos2(a.x, a.y - 4.5)], stroke);
+    p.line_segment([pos2(a.x + 3.5, a.y - 1.0), pos2(a.x, a.y - 4.5)], stroke);
+    p.galley(pos2(rect.left() + 21.0, text_top), galley, fg);
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// Distance from a one-line galley's top to the visual centre of its
+/// characters. The line box is taller than the ink and the ink sits high
+/// in it (CJK and capitals span roughly baseline − 0.74 em … baseline), so
+/// centring the box leaves text low next to an icon; centre this instead.
+pub fn ink_center(galley: &egui::Galley, font_size: f32) -> f32 {
+    let baseline = galley
+        .rows
+        .first()
+        .and_then(|r| r.row.glyphs.first().map(|g| r.pos.y + g.pos.y));
+    match baseline {
+        Some(b) => b - 0.37 * font_size,
+        None => galley.size().y / 2.0,
+    }
+}
+
 /// Hairline frame around the whole window (the drawn "border").
 pub fn window_frame(ui: &Ui, active: bool) {
     let c = theme::c();
@@ -339,4 +415,27 @@ pub fn window_frame(ui: &Ui, active: bool) {
         Stroke::new(1.0, color),
         StrokeKind::Inside,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_is_centred_on_its_ink_not_its_line_box() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let size = 11.5;
+            let galley = ui.painter().layout_no_wrap(
+                "新版本 v0.3.0".into(),
+                egui::FontId::proportional(size),
+                Color32::WHITE,
+            );
+            let ink = ink_center(&galley, size);
+            let box_mid = galley.size().y / 2.0;
+            // Inside the line, and above its middle: the ink sits high.
+            assert!(ink > 0.0 && ink < galley.size().y, "{ink}");
+            assert!(ink < box_mid, "ink {ink} vs box {box_mid}");
+        });
+    }
 }

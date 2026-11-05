@@ -20,6 +20,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 static LAYOUT: Mutex<ChromeLayout> = Mutex::new(ChromeLayout {
     caption_height: 40,
     controls_left: i32::MAX,
+    badge: (0, 0),
     border: 6,
     resizable: geometry::Edges::ALL,
 });

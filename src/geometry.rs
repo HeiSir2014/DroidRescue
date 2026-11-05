@@ -73,6 +73,9 @@ pub struct ChromeLayout {
     pub caption_height: i32,
     /// Interactive caption controls (buttons) occupy `[controls_left, right)`.
     pub controls_left: i32,
+    /// One more clickable span in the caption, `[left, right)` (the update
+    /// badge); empty when `left >= right`.
+    pub badge: (i32, i32),
     pub border: i32,
     pub resizable: Edges,
 }
@@ -82,6 +85,7 @@ impl Default for ChromeLayout {
         Self {
             caption_height: 40,
             controls_left: i32::MAX,
+            badge: (0, 0),
             border: 6,
             resizable: Edges::ALL,
         }
@@ -109,7 +113,8 @@ pub fn hit_test(x: i32, y: i32, width: i32, height: i32, layout: &ChromeLayout) 
         (_, _, _, true) => return Hit::Right,
         _ => {}
     }
-    if y < layout.caption_height && x < layout.controls_left {
+    let on_badge = (layout.badge.0..layout.badge.1).contains(&x);
+    if y < layout.caption_height && x < layout.controls_left && !on_badge {
         Hit::Caption
     } else {
         Hit::Client
@@ -154,9 +159,21 @@ mod tests {
         ChromeLayout {
             caption_height: 40,
             controls_left: 200,
+            badge: (0, 0),
             border: 6,
             resizable: edges,
         }
+    }
+
+    #[test]
+    fn the_caption_badge_is_client_and_the_rest_still_drags() {
+        let l = ChromeLayout {
+            badge: (80, 140),
+            ..layout(Edges::ALL)
+        };
+        assert_eq!(hit_test(100, 20, 300, 800, &l), Hit::Client);
+        assert_eq!(hit_test(79, 20, 300, 800, &l), Hit::Caption);
+        assert_eq!(hit_test(140, 20, 300, 800, &l), Hit::Caption);
     }
 
     #[test]
