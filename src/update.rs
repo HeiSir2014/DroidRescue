@@ -5,6 +5,12 @@
 //! pre-release there, so a draft stays a maintainer smoke test until it is
 //! published. Versions are plain `X.Y.Z`; anything with a suffix
 //! (`1.0.0-rc1`) is never offered.
+//!
+//! The API allows 60 unauthenticated requests an hour per IP, and many
+//! users share one (offices, proxies). When it says "rate limited" the web
+//! page `github.com/…/releases/latest` answers instead: it redirects to the
+//! newest release's tag, which is all we need — download URLs follow a
+//! fixed pattern.
 
 use std::fmt;
 use std::time::Duration;
@@ -14,6 +20,9 @@ use serde::Deserialize;
 /// The release feed. `DROIDRESCUE_UPDATE_FEED` (an `https://` URL or a local
 /// JSON file) replaces it for tests.
 const FEED_URL: &str = "https://api.github.com/repos/HeiSir2014/DroidRescue/releases/latest";
+/// Not rate limited: redirects to `…/releases/tag/<newest tag>`.
+const WEB_LATEST: &str = "https://github.com/HeiSir2014/DroidRescue/releases/latest";
+const RELEASES: &str = "https://github.com/HeiSir2014/DroidRescue/releases";
 /// The checksum file every release carries (`sha256sum` output).
 const SUMS_NAME: &str = "SHA256SUMS.txt";
 
@@ -177,14 +186,83 @@ pub fn sum_for(sums: &str, name: &str) -> Option<String> {
     })
 }
 
+/// What a release known only by its tag means (the web fallback): files
+/// are at GitHub's fixed `releases/download/<tag>/<name>`, sizes unknown.
+/// A package the release doesn't have shows up later, as a checksum file
+/// that doesn't list it ("download by hand").
+pub fn evaluate_tag(current: Version, tag: &str, platform: Option<Platform>) -> Check {
+    let Some(version) = Version::parse(tag) else {
+        return Check::UpToDate;
+    };
+    if version <= current {
+        return Check::UpToDate;
+    }
+    let asset = |name: String| Asset {
+        url: format!("{RELEASES}/download/{tag}/{name}"),
+        name,
+        size: 0,
+    };
+    Check::Available(Release {
+        version,
+        page: format!("{RELEASES}/tag/{tag}"),
+        package: platform.map(|p| asset(p.asset_name(version))),
+        sums: Some(asset(SUMS_NAME.into())),
+    })
+}
+
+/// The tag a `…/releases/tag/<tag>` redirect points at. `None` for any
+/// other target (no release published: GitHub redirects to `…/releases`).
+fn tag_from_location(location: &str) -> Option<&str> {
+    let (_, tag) = location.rsplit_once("/releases/tag/")?;
+    let tag = tag.trim_end_matches('/');
+    (!tag.is_empty()).then_some(tag)
+}
+
 /// Asks the feed whether something newer is out for this build.
 pub fn check() -> Result<Check, String> {
-    let feed = std::env::var("DROIDRESCUE_UPDATE_FEED").unwrap_or_else(|_| FEED_URL.into());
-    let Some(json) = fetch_text(&feed)? else {
-        // 404: nothing published yet.
-        return Ok(Check::UpToDate);
-    };
-    evaluate(Version::current(), &json, Platform::CURRENT)
+    if let Ok(feed) = std::env::var("DROIDRESCUE_UPDATE_FEED") {
+        return match fetch_text(&feed)? {
+            Some(json) => evaluate(Version::current(), &json, Platform::CURRENT),
+            None => Ok(Check::UpToDate),
+        };
+    }
+    let api = agent()
+        .get(FEED_URL)
+        .header("Accept", "application/vnd.github+json")
+        .call();
+    match api {
+        Ok(mut r) => {
+            let json = r
+                .body_mut()
+                .read_to_string()
+                .map_err(|e| format!("读取版本信息失败：{e}"))?;
+            evaluate(Version::current(), &json, Platform::CURRENT)
+        }
+        // Nothing published yet.
+        Err(ureq::Error::StatusCode(404)) => Ok(Check::UpToDate),
+        Err(ureq::Error::StatusCode(403 | 429)) => check_web(),
+        Err(e) => Err(network_error(&e)),
+    }
+}
+
+/// The rate-limit-free way: where does the "latest release" page redirect?
+fn check_web() -> Result<Check, String> {
+    let response = agent()
+        .get(WEB_LATEST)
+        .config()
+        .max_redirects(0)
+        .build()
+        .call()
+        .map_err(|e| network_error(&e))?;
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    Ok(match tag_from_location(location) {
+        Some(tag) => evaluate_tag(Version::current(), tag, Platform::CURRENT),
+        None => Check::UpToDate,
+    })
 }
 
 /// A small text resource: an `http(s)://` URL, or a local file (tests).
@@ -195,11 +273,7 @@ pub fn fetch_text(source: &str) -> Result<Option<String>, String> {
             .map(Some)
             .map_err(|e| format!("读取 {source} 失败：{e}"));
     }
-    let mut request = agent().get(source);
-    if source.starts_with("https://api.github.com/") {
-        request = request.header("Accept", "application/vnd.github+json");
-    }
-    match request.call() {
+    match agent().get(source).call() {
         Ok(mut r) => r
             .body_mut()
             .read_to_string()
@@ -380,6 +454,59 @@ mod tests {
         let text = fetch_text(file.to_str().unwrap()).unwrap().unwrap();
         assert!(text.contains("v9.0.0"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_web_redirect_names_the_newest_tag() {
+        let base = "https://github.com/HeiSir2014/DroidRescue/releases";
+        assert_eq!(
+            tag_from_location(&format!("{base}/tag/v0.3.0")),
+            Some("v0.3.0")
+        );
+        assert_eq!(
+            tag_from_location(&format!("{base}/tag/v0.3.0/")),
+            Some("v0.3.0")
+        );
+        // Nothing published: GitHub sends you to the list instead.
+        assert_eq!(tag_from_location(base), None);
+        assert_eq!(tag_from_location(""), None);
+    }
+
+    #[test]
+    fn a_newer_tag_offers_files_at_githubs_download_urls() {
+        let Check::Available(r) = evaluate_tag(v("0.2.0"), "v0.3.0", Some(Platform::WindowsX64))
+        else {
+            panic!("expected an update");
+        };
+        let base = "https://github.com/HeiSir2014/DroidRescue/releases";
+        assert_eq!(
+            r.package.unwrap().url,
+            format!("{base}/download/v0.3.0/DroidRescue-0.3.0-win-x64.exe")
+        );
+        assert_eq!(
+            r.sums.unwrap().url,
+            format!("{base}/download/v0.3.0/SHA256SUMS.txt")
+        );
+        assert_eq!(r.page, format!("{base}/tag/v0.3.0"));
+    }
+
+    #[test]
+    fn same_older_or_odd_tags_offer_nothing() {
+        for tag in ["v0.3.0", "v0.2.9", "v0.4.0-rc1", "nightly"] {
+            assert_eq!(
+                evaluate_tag(v("0.3.0"), tag, Some(Platform::MacArm64)),
+                Check::UpToDate,
+                "{tag}"
+            );
+        }
+    }
+
+    /// The web fallback against the real site (network).
+    /// `cargo test real_web -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_web_latest_answers() {
+        println!("{:?}", check_web());
     }
 
     /// The real feed (network). `cargo test real_feed -- --ignored --nocapture`

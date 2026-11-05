@@ -390,4 +390,9 @@ from the same path, `.old` removed.
 on Windows and on the Mac; README/CHANGELOG/使用说明 explain it.
 **Tests**: manual: old build → badge appears → restart → new version in
 the title; `.old` gone on the following start.
-**Status**: Not Started
+**Done**: v0.3.0 published (CI built both platforms). Against the real
+release, posing as 0.2.0: Windows installed the 34.8 MB exe (hash equal
+to SHA256SUMS), Mac the signed 0.3.0 `.app`. The API was rate-limited
+for our IP at the time → added the web-redirect fallback (`check_web`).
+**Pending**: an in-app update from v0.3.x to the next release (v0.3.1).
+**Status**: In Progress
