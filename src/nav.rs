@@ -91,14 +91,28 @@ const STATUS_H: f32 = 34.0;
 /// Height of the brand row above it.
 const BRAND_H: f32 = 40.0;
 
+/// Height of the row under the status kept free for the update badge.
+const BADGE_ROW_H: f32 = 30.0;
+
+/// Where the update badge goes in a sidebar drawn with `badge_row`: the
+/// left-centre point of the row under the status.
+pub fn badge_slot(rect: Rect) -> Pos2 {
+    pos2(
+        rect.left() + 14.0,
+        rect.top() + 12.0 + BRAND_H + STATUS_H + BADGE_ROW_H / 2.0 - 6.0,
+    )
+}
+
 /// Draw the sidebar in `rect`; returns the page clicked, if any. `status`
-/// is shown at the top when the window has no caption of ours (macOS).
+/// is shown at the top when the window has no caption of ours (macOS);
+/// `badge_row` then leaves a row under it for the caller's update badge.
 pub fn sidebar(
     ui: &mut egui::Ui,
     rect: Rect,
     current: Page,
     collapsed: bool,
     status: Option<&Status>,
+    badge_row: bool,
 ) -> Option<Page> {
     let c = theme::c();
     let p = ui.painter_at(rect);
@@ -148,6 +162,9 @@ pub fn sidebar(
             paint_status(&ui.painter_at(rect.shrink2(vec2(pad, 0.0))), lamp, status);
         }
         y += STATUS_H;
+        if badge_row && !collapsed {
+            y += BADGE_ROW_H;
+        }
     }
     for page in Page::MAIN {
         let r = Rect::from_min_size(

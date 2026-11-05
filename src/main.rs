@@ -37,9 +37,9 @@ mod skin;
 #[path = "macos/surface.rs"]
 mod surface;
 mod theme;
-// Stage 19 lands the check alone; the UI that calls it is Stage 21.
-#[allow(dead_code)]
 mod update;
+mod update_swap;
+mod updater;
 #[cfg(windows)]
 mod usbdev;
 #[cfg(target_os = "macos")]
@@ -543,6 +543,13 @@ struct PadApp {
     /// Fit the window to the picture next frame (after the compact minimum
     /// size has been applied).
     fit_pending: bool,
+    updater: updater::Updater,
+    /// The OS window title names this staged update (set once it's ready).
+    titled_update: Option<update::Version>,
+    /// Caption span of the update badge (clickable through the chrome).
+    badge_rect: Option<Rect>,
+    /// Start this (the updated app) once this instance has exited.
+    restart_into: Option<std::path::PathBuf>,
 }
 
 impl PadApp {
@@ -566,6 +573,7 @@ impl PadApp {
 
         let shared: SharedRef = Arc::default();
         let shared_for_rescue = shared.clone();
+        let shared_for_updater = shared.clone();
         let profile_list = load_profiles(&shared);
         shared.lock().unwrap().usb_targets = profiles::usb_targets(&profile_list);
         let tools = match Tools::locate() {
@@ -624,6 +632,85 @@ impl PadApp {
             sized_once: false,
             settle: 0,
             fit_pending: false,
+            updater: {
+                let auto = cc.storage.and_then(|s| s.get_string(AUTO_UPDATE_KEY));
+                let log_to = shared_for_updater;
+                let ctx = cc.egui_ctx.clone();
+                updater::Updater::spawn(
+                    auto.as_deref() != Some("false"),
+                    Arc::new(move |line| log(&log_to, line)),
+                    Arc::new(move || ctx.request_repaint()),
+                )
+            },
+            titled_update: None,
+            badge_rect: None,
+            restart_into: None,
+        }
+    }
+
+    /// Why restarting now would interrupt something, if it would.
+    fn restart_blocker(&self, snap: &Snapshot) -> Option<&'static str> {
+        if self.mirroring() {
+            Some("正在投屏，结束后再重启")
+        } else if self.rescue.status.lock().unwrap().busy {
+            Some("救援脚本运行中，结束后再重启")
+        } else if !snap.tasks.is_empty() {
+            Some("有任务在进行，完成后再重启")
+        } else {
+            None
+        }
+    }
+
+    /// The update pill at `left_center`; handles its click. Returns its
+    /// rect when shown.
+    fn update_badge(
+        &mut self,
+        ui: &mut egui::Ui,
+        left_center: egui::Pos2,
+        snap: &Snapshot,
+    ) -> Option<Rect> {
+        let badge = updater::badge(&self.updater.state())?;
+        let blocker = match badge {
+            updater::Badge::Restart(_) => self.restart_blocker(snap),
+            _ => None,
+        };
+        let response = widgets::update_badge(ui, left_center, &badge, blocker.is_none());
+        let rect = response.rect;
+        let response = match (&badge, blocker) {
+            (_, Some(why)) => response.on_hover_text(why),
+            (updater::Badge::Restart(_), None) => {
+                response.on_hover_text("新版本已下载并装好；点击关闭并重新打开软件")
+            }
+            (updater::Badge::Download { .. }, None) => {
+                response.on_hover_text("无法自动安装，点击打开下载页")
+            }
+            (updater::Badge::Progress(_), None) => response,
+        };
+        if response.clicked() {
+            match badge {
+                updater::Badge::Restart(_) => {
+                    self.restart_into = self.updater.restart_target();
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+                }
+                updater::Badge::Download { page, .. } => {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(page));
+                }
+                updater::Badge::Progress(_) => {}
+            }
+        }
+        Some(rect)
+    }
+
+    /// Puts a ready update into the OS window title (taskbar, macOS title
+    /// bar) once.
+    fn sync_title(&mut self, ctx: &egui::Context) {
+        let ready = match self.updater.state() {
+            updater::State::Ready { version } => Some(version),
+            _ => None,
+        };
+        if ready != self.titled_update {
+            self.titled_update = ready;
+            ctx.send_viewport_cmd(ViewportCommand::Title(window_title(ready)));
         }
     }
 
@@ -1169,7 +1256,7 @@ impl PadApp {
                     .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
             }
         }
-        let p = ui.painter();
+        let p = ui.painter().clone();
         p.rect_filled(rect, 0.0, theme::c().surface);
         p.line_segment(
             [rect.left_bottom(), rect.right_bottom()],
@@ -1178,7 +1265,7 @@ impl PadApp {
 
         let y = rect.center().y;
         let logo = Rect::from_center_size(pos2(rect.left() + 12.0 + 11.0, y), vec2(22.0, 22.0));
-        icons::brand_mark(p, logo);
+        icons::brand_mark(&p, logo);
         let mark = p.text(
             pos2(logo.right() + 8.0, y),
             Align2::LEFT_CENTER,
@@ -1186,11 +1273,14 @@ impl PadApp {
             theme::strong_font(15.0),
             theme::c().text,
         );
-        let version = widgets::version_tag(p, pos2(mark.right() + 8.0, y), APP_VERSION);
+        let version = widgets::version_tag(&p, pos2(mark.right() + 8.0, y), APP_VERSION);
+        // A new version, next to the one running.
+        self.badge_rect = self.update_badge(ui, pos2(version.right() + 8.0, y), snap);
+        let before_status = self.badge_rect.map_or(version.right(), |r| r.right());
         // The English name lives in the OS window title (taskbar, Alt-Tab).
         let status = self.device_status(snap);
-        let lamp_c = pos2(version.right() + 16.0, y);
-        nav::paint_status(p, lamp_c, &status);
+        let lamp_c = pos2(before_status + 16.0, y);
+        nav::paint_status(&p, lamp_c, &status);
 
         let mut controls_left = rect.right();
         let builder = egui::UiBuilder::new()
@@ -1702,6 +1792,7 @@ impl eframe::App for PadApp {
         }
 
         let snap = self.snapshot();
+        self.sync_title(&ctx);
         // USB serial == adb serial over USB; remember its model for rescue.
         for d in snap
             .devices
@@ -1756,9 +1847,13 @@ impl eframe::App for PadApp {
                 if OWN_CAPTION {
                     let controls_left = self.caption(ui, &snap, maximized);
                     let ppp = ctx.pixels_per_point();
+                    let px = |x: f32| (x * ppp).round() as i32;
                     chrome::set_layout(ChromeLayout {
-                        caption_height: (CAPTION_H * ppp).round() as i32,
-                        controls_left: (controls_left * ppp).round() as i32,
+                        caption_height: px(CAPTION_H),
+                        controls_left: px(controls_left),
+                        badge: self
+                            .badge_rect
+                            .map_or((0, 0), |r| (px(r.left()), px(r.right()))),
                         border: (RESIZE_BORDER * ppp).round() as i32,
                         resizable: if maximized { Edges::NONE } else { Edges::ALL },
                     });
@@ -1774,9 +1869,19 @@ impl eframe::App for PadApp {
                 // Our caption shows the device status; without one (macOS)
                 // the sidebar does.
                 let status = (!OWN_CAPTION).then(|| self.device_status(&snap));
-                if let Some(page) = nav::sidebar(ui, nav_rect, self.page, compact, status.as_ref())
-                {
+                let sidebar_badge = !OWN_CAPTION && updater::badge(&self.updater.state()).is_some();
+                if let Some(page) = nav::sidebar(
+                    ui,
+                    nav_rect,
+                    self.page,
+                    compact,
+                    status.as_ref(),
+                    sidebar_badge,
+                ) {
                     self.page = page;
+                }
+                if sidebar_badge && !compact {
+                    self.update_badge(ui, nav::badge_slot(nav_rect), &snap);
                 }
                 let log_h = if self.log_open {
                     LOG_OPEN_H
@@ -1817,15 +1922,27 @@ impl eframe::App for PadApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(PAGE_KEY, self.page.key().to_string());
+        storage.set_string(AUTO_UPDATE_KEY, self.updater.auto().to_string());
     }
 
     fn on_exit(&mut self) {
         self.end_mirror_now();
+        // 重启更新: the window state is saved by now; start the new version.
+        if let Some(target) = self.restart_into.take()
+            && let Err(e) = updater::relaunch(&target)
+        {
+            log(
+                &self.shared,
+                format!("✘ 启动新版本失败（请手动打开 {}）: {e}", target.display()),
+            );
+        }
     }
 }
 
 /// eframe storage key of the last page.
 const PAGE_KEY: &str = "page";
+/// eframe storage key of 自动检查更新 ("true" / "false").
+const AUTO_UPDATE_KEY: &str = "auto_update";
 
 /// DX12 on Windows (so decoder textures can be shared in), Metal on macOS;
 /// NV12 sampling when the adapter supports it, otherwise video uses the
@@ -1853,9 +1970,13 @@ const APP_TITLE: &str = "安卓救援宝 DroidRescue";
 /// The version as shown to users ("v0.2.0").
 const APP_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
-/// The OS window title (taskbar, Alt-Tab, macOS title bar): name + version.
-fn window_title() -> String {
-    format!("{APP_TITLE} {APP_VERSION}")
+/// The OS window title (taskbar, Alt-Tab, macOS title bar): name + version,
+/// and a downloaded update waiting for a restart.
+fn window_title(ready: Option<update::Version>) -> String {
+    match ready {
+        None => format!("{APP_TITLE} {APP_VERSION}"),
+        Some(v) => format!("{APP_TITLE} {APP_VERSION} · 新版本 {v} 已就绪，重启生效"),
+    }
 }
 
 fn main() -> eframe::Result {
@@ -1885,7 +2006,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: native_chrome(
             egui::ViewportBuilder::default()
-                .with_title(window_title())
+                .with_title(window_title(None))
                 .with_icon(app_icon())
                 .with_inner_size(DEFAULT_SIZE)
                 .with_min_inner_size(min_window_size(false)),
@@ -1981,11 +2102,21 @@ mod tests {
     #[test]
     fn window_title_shows_the_version_but_the_app_id_stays_fixed() {
         assert_eq!(
-            window_title(),
+            window_title(None),
             format!("安卓救援宝 DroidRescue v{}", env!("CARGO_PKG_VERSION"))
         );
         // eframe stores window state under this name: never versioned.
         assert_eq!(APP_TITLE, "安卓救援宝 DroidRescue");
+    }
+
+    #[test]
+    fn a_staged_update_is_named_in_the_window_title() {
+        let title = window_title(update::Version::parse("9.0.0"));
+        assert!(
+            title.ends_with("· 新版本 v9.0.0 已就绪，重启生效"),
+            "{title}"
+        );
+        assert!(title.starts_with(&window_title(None)));
     }
 
     #[test]

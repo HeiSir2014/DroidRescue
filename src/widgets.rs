@@ -328,6 +328,67 @@ pub fn version_tag(p: &egui::Painter, left_center: egui::Pos2, version: &str) ->
     rect
 }
 
+/// The update pill beside the version tag ("新版本 v0.3.0 · 重启更新"),
+/// left edge at `left_center`. Green = restart ready, amber = download by
+/// hand, grey = downloading (not clickable). `enabled: false` keeps it
+/// visible but unclickable (the caller adds the reason as a tooltip).
+pub fn update_badge(
+    ui: &mut Ui,
+    left_center: egui::Pos2,
+    badge: &crate::updater::Badge,
+    enabled: bool,
+) -> Response {
+    use crate::updater::Badge;
+    let c = theme::c();
+    let fg = match badge {
+        Badge::Restart(_) => c.green,
+        Badge::Download { .. } => c.amber,
+        Badge::Progress(_) => c.text_dim,
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(badge.text().to_string(), theme::ui(11.5), fg);
+    let rect = Rect::from_min_size(
+        pos2(left_center.x, left_center.y - 10.0),
+        vec2(galley.size().x + 28.0, 20.0),
+    );
+    let clickable = enabled && !matches!(badge, Badge::Progress(_));
+    let sense = if clickable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, ui.id().with("update-badge"), sense);
+    let hot = clickable && response.hovered();
+    let p = ui.painter();
+    let fill = match badge {
+        Badge::Progress(_) => c.surface_hi,
+        _ => fg.gamma_multiply(if hot { 0.26 } else { 0.14 }),
+    };
+    p.rect_filled(rect, 10.0, fill);
+    p.rect_stroke(
+        rect,
+        10.0,
+        Stroke::new(1.0, fg.gamma_multiply(0.5)),
+        StrokeKind::Inside,
+    );
+    // An up arrow: "newer".
+    let a = pos2(rect.left() + 11.0, rect.center().y);
+    let stroke = Stroke::new(1.6, fg);
+    p.line_segment([pos2(a.x, a.y + 4.5), pos2(a.x, a.y - 4.5)], stroke);
+    p.line_segment([pos2(a.x - 3.5, a.y - 1.0), pos2(a.x, a.y - 4.5)], stroke);
+    p.line_segment([pos2(a.x + 3.5, a.y - 1.0), pos2(a.x, a.y - 4.5)], stroke);
+    p.galley(
+        pos2(rect.left() + 20.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        fg,
+    );
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
 /// Hairline frame around the whole window (the drawn "border").
 pub fn window_frame(ui: &Ui, active: bool) {
     let c = theme::c();

@@ -14,8 +14,6 @@ use serde::Deserialize;
 /// The release feed. `DROIDRESCUE_UPDATE_FEED` (an `https://` URL or a local
 /// JSON file) replaces it for tests.
 const FEED_URL: &str = "https://api.github.com/repos/HeiSir2014/DroidRescue/releases/latest";
-/// The page to send people to when the update can't be installed for them.
-pub const RELEASES_PAGE: &str = "https://github.com/HeiSir2014/DroidRescue/releases/latest";
 /// The checksum file every release carries (`sha256sum` output).
 const SUMS_NAME: &str = "SHA256SUMS.txt";
 
@@ -197,16 +195,16 @@ pub fn fetch_text(source: &str) -> Result<Option<String>, String> {
             .map(Some)
             .map_err(|e| format!("读取 {source} 失败：{e}"));
     }
-    let response = agent()
-        .get(source)
-        .header("Accept", "application/vnd.github+json")
-        .call();
-    match response {
+    let mut request = agent().get(source);
+    if source.starts_with("https://api.github.com/") {
+        request = request.header("Accept", "application/vnd.github+json");
+    }
+    match request.call() {
         Ok(mut r) => r
             .body_mut()
             .read_to_string()
             .map(Some)
-            .map_err(|e| format!("读取版本信息失败：{e}")),
+            .map_err(|e| format!("读取 {source} 失败：{e}")),
         Err(ureq::Error::StatusCode(404)) => Ok(None),
         Err(e) => Err(network_error(&e)),
     }

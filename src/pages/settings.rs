@@ -2,7 +2,7 @@
 
 use super::{card, page_header};
 use crate::icons::{self, Glyph};
-use crate::{PadApp, bundle, log, open_in_text_editor, profiles, theme, widgets};
+use crate::{PadApp, bundle, log, open_in_text_editor, profiles, theme, updater, widgets};
 use eframe::egui::{self, RichText};
 
 impl PadApp {
@@ -61,6 +61,7 @@ impl PadApp {
                         }
                     });
                 });
+                self.update_card(ui);
                 card(ui, Some((Glyph::Info, "关于")), |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 14.0;
@@ -82,6 +83,49 @@ impl PadApp {
                     });
                 });
             });
+    }
+}
+
+impl PadApp {
+    /// 更新: automatic checks on/off, check now, the last result.
+    fn update_card(&mut self, ui: &mut egui::Ui) {
+        card(ui, Some((Glyph::Update, "更新")), |ui| {
+            let state = self.updater.state();
+            ui.horizontal(|ui| {
+                let mut auto = self.updater.auto();
+                if widgets::switch_inline(ui, &mut auto, "自动检查更新").changed() {
+                    self.updater.set_auto(auto);
+                }
+                ui.add_space(12.0);
+                let busy = matches!(
+                    state,
+                    updater::State::Checking | updater::State::Downloading { .. }
+                );
+                if ui
+                    .add_enabled(!busy, egui::Button::new("立即检查"))
+                    .clicked()
+                {
+                    self.updater.check_now();
+                }
+            });
+            ui.label(
+                RichText::new(format!(
+                    "当前 {} · {}",
+                    crate::APP_VERSION,
+                    updater::describe(&state)
+                ))
+                .color(theme::c().text_dim),
+            );
+            if let updater::State::Manual { why, .. } = &state {
+                ui.label(RichText::new(why).color(theme::c().amber));
+            }
+            ui.label(
+                RichText::new(
+                    "从 GitHub 下载正式版并校验，装好后在标题栏提示；重启软件即用新版本。",
+                )
+                .color(theme::c().text_faint),
+            );
+        });
     }
 }
 

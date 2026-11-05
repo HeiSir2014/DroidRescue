@@ -28,6 +28,8 @@ pub enum Glyph {
     Palette,
     Folder,
     Info,
+    /// Software update: a circular arrow around an up arrow.
+    Update,
 }
 
 impl Glyph {
@@ -39,7 +41,7 @@ impl Glyph {
             Glyph::Export | Glyph::Profile | Glyph::Palette => PURPLE,
             Glyph::Unlock | Glyph::Bolt => AMBER,
             Glyph::Rescue => ORANGE,
-            Glyph::Checkup => GREEN,
+            Glyph::Checkup | Glyph::Update => GREEN,
             Glyph::Keys | Glyph::Manual => INDIGO,
             Glyph::Info => SLATE,
         }
@@ -203,6 +205,13 @@ pub fn draw(p: &Painter, glyph: Glyph, at: Pos2, size: f32, color: Color32) {
             p.circle_stroke(pt(8.0, 8.0), 6.2 * s, stroke);
             line(&[(8.0, 7.0), (8.0, 11.5)]);
             p.circle_filled(pt(8.0, 4.8), 1.0 * s, color);
+        }
+        Glyph::Update => {
+            // Ring open at the top right, with an arrowhead at its end.
+            arc(8.0, 8.0, 6.0, -0.35 * PI, 1.35 * PI);
+            line(&[(11.3, 1.6), (12.9, 3.2), (10.6, 4.4)]);
+            line(&[(8.0, 11.0), (8.0, 5.5)]);
+            line(&[(5.8, 7.6), (8.0, 5.4), (10.2, 7.6)]);
         }
     }
 }
